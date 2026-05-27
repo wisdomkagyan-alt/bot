@@ -3,8 +3,18 @@
 # ULTIMATE-HYBRID-SUPREME-2026-ELITE — SCALPER EDITION
 # XAU/USD + NAS100 + SPX500 + EUR/USD + GBP/JPY
 # + NIFTY50 + BANKNIFTY + SENSEX + RELIANCE + TCS
-# SCALP MODE : 1M / 5M  (Signal #1 only per session)
-# BREAKOUT   : 15M / 30M liquidity sweep signals
+#
+# FIXES APPLIED:
+# FIX 1 — Signal #2 and #3 fully blocked for ALL markets
+# FIX 2 — Lot size fixed to $50 risk for ALL markets
+# FIX 3 — Min SL strictly enforced before signal fires
+# FIX 4 — RSI extreme hard block (RSI<25 blocks SELL, RSI>75 blocks BUY)
+# FIX 5 — GBPJPY/correlated pair duplicate direction conflict fixed
+# FIX 6 — India Close session blocked (poor liquidity)
+# FIX 7 — determine_best_direction logic was INVERTED — fixed
+# FIX 8 — Countertrend signals require RSI confirmation
+# FIX 9 — Weak score signals (below 20) blocked regardless of session
+# FIX 10— SL distance validation before every signal fires
 # ============================================================
 
 import gc
@@ -45,16 +55,16 @@ PRIORITY_MARKETS = [
 ]
 
 # ============================================================
-# SESSION SCORE THRESHOLDS
+# SESSION SCORE THRESHOLDS — raised to filter weak signals
 # ============================================================
 SESSION_THRESHOLDS = {
-    "Asian Precision": 13,
-    "London":          12,
-    "NY Killzone":     12,
-    "NY+London":       11,
-    "India Open":      15,  # raised — stricter for volatile open
-    "India Midday":    12,
-    "India Close":     13,
+    "Asian Precision": 20,   # FIX 9 — raised
+    "London":          20,   # FIX 9 — raised
+    "NY Killzone":     20,   # FIX 9 — raised
+    "NY+London":       20,   # FIX 9 — raised
+    "India Open":      20,   # FIX 9 — raised
+    "India Midday":    20,   # FIX 9 — raised
+    # India Close removed — FIX 6
 }
 
 BREAKOUT_SESSION_THRESHOLDS = {
@@ -64,7 +74,6 @@ BREAKOUT_SESSION_THRESHOLDS = {
     "NY+London":       13,
     "India Open":      15,
     "India Midday":    13,
-    "India Close":     14,
 }
 
 # ============================================================
@@ -87,11 +96,11 @@ RR_PROFILE = {
 # MARKETS
 # ============================================================
 MARKETS = {
-    # ---- Global ----
     "XAU/USD": {
         "mt5": "XAUUSD.Qraw", "yf": "GC=F",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [0, 20], "decimals": 2, "min_sl": 1.5,
+        "sessions": [0, 20], "decimals": 2,
+        "min_sl": 7.0,       # FIX 3 — restored proper min_sl
         "tier": "GOLD ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.6,
         "market_type": "global",
@@ -99,7 +108,8 @@ MARKETS = {
     "NAS100": {
         "mt5": "NAS100", "yf": "^NDX",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [0, 21], "decimals": 1, "min_sl": 12.0,
+        "sessions": [0, 21], "decimals": 1,
+        "min_sl": 20.0,      # FIX 3
         "tier": "NASDAQ ELITE", "bias": "BULL",
         "rr": 1.7, "sweep_bonus": 2, "wick_ratio": 1.5,
         "market_type": "global",
@@ -107,7 +117,8 @@ MARKETS = {
     "SPX500": {
         "mt5": "SPX500", "yf": "^GSPC",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [0, 21], "decimals": 1, "min_sl": 6.0,
+        "sessions": [0, 21], "decimals": 1,
+        "min_sl": 8.0,       # FIX 3
         "tier": "SP500 ELITE", "bias": "BULL",
         "rr": 1.6, "sweep_bonus": 2, "wick_ratio": 1.4,
         "market_type": "global",
@@ -115,7 +126,8 @@ MARKETS = {
     "EUR/USD": {
         "mt5": "EURUSD", "yf": "EURUSD=X",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [0, 24], "decimals": 5, "min_sl": 0.00025,
+        "sessions": [0, 24], "decimals": 5,
+        "min_sl": 0.0008,    # FIX 3
         "tier": "FOREX MAJOR ELITE", "bias": "BULL",
         "rr": 1.5, "sweep_bonus": 1, "wick_ratio": 1.3,
         "market_type": "global",
@@ -123,17 +135,17 @@ MARKETS = {
     "GBP/JPY": {
         "mt5": "GBPJPY", "yf": "GBPJPY=X",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [0, 24], "decimals": 3, "min_sl": 0.040,
+        "sessions": [0, 24], "decimals": 3,
+        "min_sl": 0.080,     # FIX 3
         "tier": "FOREX VOLATILITY ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.5,
         "market_type": "global",
     },
-    # ---- India ----
-    # NSE opens 03:45 UTC, closes 10:00 UTC
     "NIFTY50": {
         "mt5": "NIFTY50", "yf": "^NSEI",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 15.0,  # tight 1M scalp
+        "sessions": [3, 10], "decimals": 2,
+        "min_sl": 20.0,      # FIX 3
         "tier": "INDIA INDEX ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.6,
         "market_type": "india",
@@ -141,7 +153,8 @@ MARKETS = {
     "BANKNIFTY": {
         "mt5": "BANKNIFTY", "yf": "^NSEBANK",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 20.0,  # tight 1M scalp
+        "sessions": [3, 10], "decimals": 2,
+        "min_sl": 40.0,      # FIX 3
         "tier": "INDIA BANK ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.7,
         "market_type": "india",
@@ -149,7 +162,8 @@ MARKETS = {
     "SENSEX": {
         "mt5": "SENSEX", "yf": "^BSESN",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 40.0,  # tight 1M scalp
+        "sessions": [3, 10], "decimals": 2,
+        "min_sl": 60.0,      # FIX 3
         "tier": "INDIA BSE ELITE", "bias": "BULL",
         "rr": 1.6, "sweep_bonus": 2, "wick_ratio": 1.5,
         "market_type": "india",
@@ -157,7 +171,8 @@ MARKETS = {
     "RELIANCE": {
         "mt5": "RELIANCE", "yf": "RELIANCE.NS",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 5.0,
+        "sessions": [3, 10], "decimals": 2,
+        "min_sl": 8.0,       # FIX 3
         "tier": "INDIA LARGE CAP ELITE", "bias": "BULL",
         "rr": 1.7, "sweep_bonus": 2, "wick_ratio": 1.6,
         "market_type": "india",
@@ -165,7 +180,8 @@ MARKETS = {
     "TCS": {
         "mt5": "TCS", "yf": "TCS.NS",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 8.0,
+        "sessions": [3, 10], "decimals": 2,
+        "min_sl": 12.0,      # FIX 3
         "tier": "INDIA IT ELITE", "bias": "BULL",
         "rr": 1.7, "sweep_bonus": 2, "wick_ratio": 1.6,
         "market_type": "india",
@@ -201,10 +217,16 @@ MAX_OPEN_CORRELATED = 2
 VOLATILITY_KILL     = True
 FALSE_BREAK_FILTER  = True
 
-# ---- Breakout engine settings ----
-BREAKOUT_ADX_MIN      = 28   # ADX must be higher for breakout signals
-BREAKOUT_VOL_MULT     = 1.8  # needs stronger volume
-BREAKOUT_SWEEP_NEEDED = True # must have liquidity sweep
+BREAKOUT_ADX_MIN      = 28
+BREAKOUT_VOL_MULT     = 1.8
+BREAKOUT_SWEEP_NEEDED = True
+
+# FIX 4 — RSI extreme hard block thresholds
+RSI_EXTREME_OB = 72    # block BUY above this
+RSI_EXTREME_OS = 28    # block SELL below this
+
+# FIX 9 — absolute minimum score regardless of session
+ABSOLUTE_MIN_SCORE = 20
 
 # ============================================================
 # EXECUTION SLIPPAGE BUFFER
@@ -223,6 +245,7 @@ ATR_MARKET_MULTIPLIER = {
     "RELIANCE":  0.85, "TCS":       0.85,
 }
 
+# FIX 2 — $50 risk, dollar per point for all markets
 DOLLAR_PER_POINT = {
     "XAU/USD":   100,    "NAS100":    10,     "SPX500":    10,
     "EUR/USD":   100000, "GBP/JPY":   1000,
@@ -272,15 +295,17 @@ CORRELATED_GROUPS = [
 ]
 
 DUPLICATE_WINDOWS = {
-    "XAU/USD":   600, "NAS100":    900, "SPX500":    900,
-    "EUR/USD":   600, "GBP/JPY":   600,
-    "NIFTY50":   600, "BANKNIFTY": 600, "SENSEX":    600,
-    "RELIANCE":  600, "TCS":       600,
+    "XAU/USD":   1800, "NAS100":    1800, "SPX500":    1800,  # FIX 5 — increased to 30min
+    "EUR/USD":   1800, "GBP/JPY":   1800,                     # FIX 5 — prevents same-session conflicts
+    "NIFTY50":   900,  "BANKNIFTY": 900,  "SENSEX":    900,
+    "RELIANCE":  900,  "TCS":       900,
 }
 
+# FIX 6 — India Close removed from allowed sessions
 ALLOWED_SESSIONS = [
     "Asian Precision", "London", "NY+London", "NY Killzone",
-    "India Open", "India Midday", "India Close",
+    "India Open", "India Midday",
+    # "India Close" — REMOVED: poor liquidity, unreliable fills
 ]
 
 # ============================================================
@@ -294,7 +319,6 @@ _signal_sent           = {s: 0 for s in SYMBOLS}
 _htf_cache             = {s: {"trend": "NEUTRAL", "ts": 0} for s in SYMBOLS}
 _last_signal_direction = {}
 _last_signal_time      = {}
-# Tracks signal count per symbol per session — ONLY #1 allowed for scalp
 _signal_counter        = {s: {"session": None, "count": 0} for s in SYMBOLS}
 _daily_signal_count    = {s: 0 for s in SYMBOLS}
 
@@ -308,7 +332,7 @@ for _file in ["signals_log.csv", "signals_backup.csv"]:
 # ============================================================
 def reset_daily():
     global daily_pnl, consecutive_losses, last_reset_day
-    global _daily_signal_count, _htf_cache
+    global _daily_signal_count, _htf_cache, _signal_counter
     current_day = datetime.now(timezone.utc).day
     if current_day != last_reset_day:
         daily_pnl           = 0
@@ -316,25 +340,25 @@ def reset_daily():
         last_reset_day      = current_day
         _daily_signal_count = {s: 0 for s in SYMBOLS}
         _htf_cache          = {s: {"trend": "NEUTRAL", "ts": 0} for s in SYMBOLS}
+        # FIX 1 — reset signal counters daily
+        _signal_counter     = {s: {"session": None, "count": 0} for s in SYMBOLS}
         log.info("Daily reset complete")
 
 def update_trade_result(pnl):
     global daily_pnl, consecutive_losses
     daily_pnl += pnl
-    if pnl < 0:
-        consecutive_losses += 1
-    else:
-        consecutive_losses = 0
+    if pnl < 0: consecutive_losses += 1
+    else:       consecutive_losses = 0
 
 def sync_real_pnl():
     return daily_pnl
 
 # ============================================================
-# WATCHDOG / LOG ROTATION
+# WATCHDOG / LOG
 # ============================================================
 def watchdog():
     try:
-        with open("heartbeat.txt", "w", encoding="utf-8") as f:
+        with open("/tmp/heartbeat.txt", "w", encoding="utf-8") as f:
             f.write(f"{datetime.now(timezone.utc).isoformat()} | {SYSTEM_VERSION} | ACTIVE")
     except Exception as e:
         log.error(f"Watchdog failure: {e}")
@@ -347,9 +371,6 @@ def rotate_log():
     except Exception as e:
         log.error(f"Log rotation failure: {e}")
 
-# ============================================================
-# SIGNAL LOGGER
-# ============================================================
 def log_signal(symbol, direction, score, rr, entry, sl, tp,
                session, regime, timeframe, signal_type):
     with log_lock:
@@ -383,10 +404,10 @@ def send_telegram(msg):
                 timeout=8
             )
             if r.status_code != 200:
-                log.error(f"Telegram HTTP {r.status_code} | {r.text}")
+                log.error(f"Telegram HTTP {r.status_code}")
                 time.sleep(2)
                 continue
-            log.info(f"Telegram sent")
+            log.info("Telegram sent")
             return True
         except Exception as e:
             log.error(f"Telegram error attempt {attempt+1}: {e}")
@@ -416,17 +437,14 @@ def loss_streak_lock():
     return False
 
 # ============================================================
-# SESSION FILTER — includes India sessions (UTC)
-# NSE: 03:45–10:00 UTC
-# India Open   = 03:45–05:30
-# India Midday = 05:30–07:30
-# India Close  = 07:30–10:00
+# SESSION FILTER
+# FIX 6 — India Close removed
 # ============================================================
 def in_session(symbol_key):
     now = datetime.now(timezone.utc)
     h   = now.hour
     m   = now.minute
-    hm  = h * 60 + m   # minutes since midnight UTC
+    hm  = h * 60 + m
 
     s, e = MARKETS[symbol_key]["sessions"]
     if not (s <= h < e):
@@ -435,12 +453,11 @@ def in_session(symbol_key):
     mtype = MARKETS[symbol_key]["market_type"]
 
     if mtype == "india":
-        if 225 <= hm < 330:  return True, "India Open"    # 03:45–05:30
-        if 330 <= hm < 450:  return True, "India Midday"  # 05:30–07:30
-        if 450 <= hm < 600:  return True, "India Close"   # 07:30–10:00
+        if 225 <= hm < 330: return True, "India Open"    # 03:45–05:30
+        if 330 <= hm < 450: return True, "India Midday"  # 05:30–07:30
+        # FIX 6: India Close (07:30–10:00) removed
         return False, "Closed"
 
-    # Global sessions
     if 1  <= h < 6:  return True, "Asian Precision"
     if 8  <= h < 11: return True, "London"
     if 13 <= h < 15: return True, "NY Killzone"
@@ -448,7 +465,7 @@ def in_session(symbol_key):
     return False, "Closed"
 
 # ============================================================
-# DATA FETCHING — 1M primary, 5M fallback; 15M/30M for breakout
+# DATA FETCHING
 # ============================================================
 def fetch_yf(ticker, period="7d", interval="1m"):
     for attempt in range(3):
@@ -464,13 +481,11 @@ def fetch_yf(ticker, period="7d", interval="1m"):
                 raw.columns = raw.columns.get_level_values(0)
             raw.columns = [str(c).lower() for c in raw.columns]
             if "volume" in raw.columns:
-                if raw["volume"].sum() == 0:
-                    raw["volume"] = 1000
+                if raw["volume"].sum() == 0: raw["volume"] = 1000
             else:
                 raw["volume"] = 1000
             for col in ["open","high","low","close","volume"]:
-                if col not in raw.columns:
-                    raw[col] = 0
+                if col not in raw.columns: raw[col] = 0
             df = raw[["open","high","low","close","volume"]].copy()
             df = df.drop_duplicates().ffill().bfill()
             return df.reset_index(drop=True)
@@ -481,20 +496,15 @@ def fetch_yf(ticker, period="7d", interval="1m"):
 
 def fetch_market_data(symbol_key, for_breakout=False):
     yf_sym = MARKETS[symbol_key]["yf"]
-
     if for_breakout:
-        # 15M data for breakout signals
         period = "59d" if symbol_key in ["EUR/USD","GBP/JPY"] else "30d"
         df = fetch_yf(yf_sym, period=period, interval="15m")
         if df is not None and len(df) > 60:
             return df.drop_duplicates().reset_index(drop=True), "15M"
         return None, None
-
-    # Scalp: 1M primary
     df = fetch_yf(yf_sym, period="7d", interval="1m")
     if df is not None and len(df) > 60:
         return df.drop_duplicates().reset_index(drop=True), "1M"
-    # 5M fallback
     period = "59d" if symbol_key in ["EUR/USD","GBP/JPY"] else "30d"
     df = fetch_yf(yf_sym, period=period, interval="5m")
     if df is not None and len(df) > 60:
@@ -505,10 +515,8 @@ def get_entry_data(symbol_key, for_breakout=False):
     return fetch_market_data(symbol_key, for_breakout=for_breakout)
 
 def get_spread(df):
-    if df is None or len(df) < 3:
-        return 999
-    recent = df.tail(3)
-    return (recent["high"].astype(float) - recent["low"].astype(float)).mean() * 0.18
+    if df is None or len(df) < 3: return 999
+    return (df.tail(3)["high"].astype(float) - df.tail(3)["low"].astype(float)).mean() * 0.18
 
 # ============================================================
 # INDICATORS
@@ -520,19 +528,19 @@ def add_ind(df):
     lo  = pd.to_numeric(df["low"],    errors="coerce")
     vol = pd.to_numeric(df["volume"], errors="coerce")
 
-    df["ema9"]   = ta.trend.EMAIndicator(cl, 5).ema_indicator()
-    df["ema21"]  = ta.trend.EMAIndicator(cl, 13).ema_indicator()
-    df["ema50"]  = ta.trend.EMAIndicator(cl, 21).ema_indicator()
-    df["ema200"] = ta.trend.EMAIndicator(cl, 50).ema_indicator()
-    df["rsi"]    = ta.momentum.RSIIndicator(cl, 7).rsi()
-    df["atr"]    = ta.volatility.AverageTrueRange(hi, lo, cl, 7).average_true_range()
-    df["adx"]    = ta.trend.ADXIndicator(hi, lo, cl, 7).adx()
-    df["volma"]  = vol.rolling(10).mean()
-    df["vwap"]   = (cl * vol).cumsum() / vol.cumsum()
-    df["stdv"]   = cl.rolling(STDV_PERIOD).std()
+    df["ema9"]     = ta.trend.EMAIndicator(cl, 5).ema_indicator()
+    df["ema21"]    = ta.trend.EMAIndicator(cl, 13).ema_indicator()
+    df["ema50"]    = ta.trend.EMAIndicator(cl, 21).ema_indicator()
+    df["ema200"]   = ta.trend.EMAIndicator(cl, 50).ema_indicator()
+    df["rsi"]      = ta.momentum.RSIIndicator(cl, 7).rsi()
+    df["atr"]      = ta.volatility.AverageTrueRange(hi, lo, cl, 7).average_true_range()
+    df["adx"]      = ta.trend.ADXIndicator(hi, lo, cl, 7).adx()
+    df["volma"]    = vol.rolling(10).mean()
+    df["vwap"]     = (cl * vol).cumsum() / vol.cumsum()
+    df["stdv"]     = cl.rolling(STDV_PERIOD).std()
     df["aox_fast"] = ta.trend.EMAIndicator(cl, AOX_FAST).ema_indicator()
     df["aox_slow"] = ta.trend.EMAIndicator(cl, AOX_SLOW).ema_indicator()
-    df["aox"]    = df["aox_fast"] - df["aox_slow"]
+    df["aox"]      = df["aox_fast"] - df["aox_slow"]
 
     hlc3 = (hi + lo + cl) / 3
     esa  = hlc3.ewm(span=6, adjust=False).mean()
@@ -555,18 +563,13 @@ def get_trend(symbol_key):
     if now - cache["ts"] < HTF_REFRESH:
         return cache["trend"]
     df, _ = get_entry_data(symbol_key)
-    if df is None:
-        return "NEUTRAL"
+    if df is None: return "NEUTRAL"
     df = add_ind(df)
-    if df is None or len(df) < 30:
-        return "NEUTRAL"
+    if df is None or len(df) < 30: return "NEUTRAL"
     last = df.iloc[-1]
-    if last["ema21"] > last["ema50"]:
-        trend = "BULL"
-    elif last["ema21"] < last["ema50"]:
-        trend = "BEAR"
-    else:
-        trend = MARKETS[symbol_key].get("bias", "NEUTRAL")
+    trend = ("BULL" if last["ema21"] > last["ema50"]
+             else "BEAR" if last["ema21"] < last["ema50"]
+             else MARKETS[symbol_key].get("bias", "NEUTRAL"))
     cache["trend"] = trend
     cache["ts"]    = now
     return trend
@@ -574,12 +577,14 @@ def get_trend(symbol_key):
 def mtf_bullish(symbol_key, df):
     if df is None or len(df) < 60: return False
     last = df.iloc[-1]
-    return float(last["ema9"]) > float(last["ema21"]) > float(last["ema50"]) and float(last["close"]) > float(last["ema200"])
+    return (float(last["ema9"]) > float(last["ema21"]) > float(last["ema50"])
+            and float(last["close"]) > float(last["ema200"]))
 
 def mtf_bearish(symbol_key, df):
     if df is None or len(df) < 60: return False
     last = df.iloc[-1]
-    return float(last["ema9"]) < float(last["ema21"]) < float(last["ema50"]) and float(last["close"]) < float(last["ema200"])
+    return (float(last["ema9"]) < float(last["ema21"]) < float(last["ema50"])
+            and float(last["close"]) < float(last["ema200"]))
 
 def h4_trend(df, direction):
     if df is None or len(df) < 55: return False
@@ -658,12 +663,13 @@ def detect_displacement(df, symbol_key):
 def detect_wick_rejection(df, atr, symbol_key):
     if len(df) < 2: return False, False
     candle = df.iloc[-1]
-    op, cl, hi, lo = float(candle["open"]), float(candle["close"]), float(candle["high"]), float(candle["low"])
-    body = abs(cl - op)
+    op, cl = float(candle["open"]), float(candle["close"])
+    hi, lo = float(candle["high"]), float(candle["low"])
+    body   = abs(cl - op)
     if body < atr * 0.05: return False, False
-    upper = hi - max(op, cl)
-    lower = min(op, cl) - lo
-    wr    = MARKETS[symbol_key]["wick_ratio"]
+    upper  = hi - max(op, cl)
+    lower  = min(op, cl) - lo
+    wr     = MARKETS[symbol_key]["wick_ratio"]
     return lower > body * wr, upper > body * wr
 
 def premium_discount(df, symbol_key):
@@ -712,8 +718,7 @@ def institutional_structure_score(df, symbol_key):
     pd_zone                = premium_discount(df, symbol_key)
 
     buy_score = sell_score = 0
-    buy_cond  = {}
-    sell_cond = {}
+    buy_cond  = {}; sell_cond = {}
 
     if bull_sweep: buy_score  += 2; buy_cond["SWEEP"]        = True
     if bull_wick:  buy_score  += 2; buy_cond["WICK"]         = True
@@ -739,33 +744,19 @@ def institutional_structure_score(df, symbol_key):
     return buy_cond, sell_cond, buy_score, sell_score
 
 # ============================================================
-# BREAKOUT / LIQUIDITY SWEEP DETECTOR (15M / 30M)
-# Returns direction, score, or None
+# BREAKOUT DETECTOR (15M)
 # ============================================================
 def detect_breakout_signal(df, symbol_key):
-    """
-    Fires a BREAKOUT or BREAKDOWN signal on 15M data when:
-    - Price sweeps a multi-bar high/low (liquidity grab)
-    - Closes back beyond the swept level (confirmation)
-    - Volume is elevated
-    - ADX >= BREAKOUT_ADX_MIN
-    Returns: (direction, score) or (None, 0)
-    """
-    if df is None or len(df) < 30:
-        return None, 0
-
+    if df is None or len(df) < 30: return None, 0
     last  = df.iloc[-1]
     adx   = float(last["adx"])
     vol   = float(last["volume"])
     volma = float(last["volma"]) if not pd.isna(last["volma"]) else 0
     aox   = float(last["aox"])   if not pd.isna(last["aox"])   else 0
     atr   = float(last["atr"])
-    close = float(last["close"])
 
-    if adx < BREAKOUT_ADX_MIN:
-        return None, 0
-    if volma <= 0 or vol < volma * BREAKOUT_VOL_MULT:
-        return None, 0
+    if adx < BREAKOUT_ADX_MIN: return None, 0
+    if volma <= 0 or vol < volma * BREAKOUT_VOL_MULT: return None, 0
 
     bull_sweep, bear_sweep = detect_liquidity_sweep(df, symbol_key)
     bull_fvg,   bear_fvg   = fair_value_gap(df)
@@ -773,37 +764,31 @@ def detect_breakout_signal(df, symbol_key):
     bos_bull               = break_of_structure(df, "BUY")
     bos_bear               = break_of_structure(df, "SELL")
 
-    bull_score = 0
-    bear_score = 0
-
-    if bull_sweep: bull_score += 5   # core sweep
-    if bos_bull:   bull_score += 4   # confirmed break
-    if bull_fvg:   bull_score += 2
-    if bull_wick:  bull_score += 2
-    if aox > 0:    bull_score += 1
+    bull_score = bear_score = 0
+    if bull_sweep:            bull_score += 5
+    if bos_bull:              bull_score += 4
+    if bull_fvg:              bull_score += 2
+    if bull_wick:             bull_score += 2
+    if aox > 0:               bull_score += 1
     if vwap_trend(df, "BUY"): bull_score += 2
 
-    if bear_sweep: bear_score += 5
-    if bos_bear:   bear_score += 4
-    if bear_fvg:   bear_score += 2
-    if bear_wick:  bear_score += 2
-    if aox < 0:    bear_score += 1
+    if bear_sweep:             bear_score += 5
+    if bos_bear:               bear_score += 4
+    if bear_fvg:               bear_score += 2
+    if bear_wick:              bear_score += 2
+    if aox < 0:                bear_score += 1
     if vwap_trend(df, "SELL"): bear_score += 2
 
     if BREAKOUT_SWEEP_NEEDED:
-        if bull_score > bear_score and not bull_sweep:
-            return None, 0
-        if bear_score > bull_score and not bear_sweep:
-            return None, 0
+        if bull_score > bear_score and not bull_sweep: return None, 0
+        if bear_score > bull_score and not bear_sweep: return None, 0
 
-    if bull_score > bear_score and bull_score >= 9:
-        return "BUY", bull_score
-    if bear_score > bull_score and bear_score >= 9:
-        return "SELL", bear_score
+    if bull_score > bear_score and bull_score >= 9: return "BUY",  bull_score
+    if bear_score > bull_score and bear_score >= 9: return "SELL", bear_score
     return None, 0
 
 # ============================================================
-# SIGNAL GATE — only signal #1 allowed for scalp
+# FIX 1 — SIGNAL GATE: ONLY SIGNAL #1 PER SESSION PER SYMBOL
 # ============================================================
 def get_signal_number(symbol_key, session):
     global _signal_counter
@@ -816,13 +801,37 @@ def get_signal_number(symbol_key, session):
     return n, "SCALP ENTRY"
 
 def scalp_signal_allowed(symbol_key, session):
-    """Block signals #2 and #3 — only first signal per session per symbol."""
+    """FIX 1 — Block signals #2 and #3. Only signal #1 per session."""
     sc = _signal_counter[symbol_key]
-    # If this would be signal #2 or more in the same session, block it
     if sc["session"] == session and sc["count"] >= 1:
-        log.info(f"REJECTED {symbol_key} — signal #2/#3 blocked (first-signal-only rule)")
+        log.info(f"BLOCKED {symbol_key} — signal #2/#3 not allowed (first signal only rule)")
         return False
     return True
+
+# ============================================================
+# FIX 3 + FIX 10 — SL VALIDATION
+# ============================================================
+def validate_sl_distance(symbol_key, price, sl):
+    """Block signal if SL distance is below minimum."""
+    min_sl  = MARKETS[symbol_key]["min_sl"]
+    sl_dist = abs(price - sl)
+    if sl_dist < min_sl:
+        log.info(f"BLOCKED {symbol_key} — SL distance {sl_dist:.5f} below minimum {min_sl}")
+        return False
+    return True
+
+# ============================================================
+# FIX 4 — RSI EXTREME HARD BLOCK
+# ============================================================
+def rsi_extreme_block(rsi, direction):
+    """Block BUY when RSI is overbought, block SELL when RSI is oversold."""
+    if direction == "BUY"  and rsi > RSI_EXTREME_OB:
+        log.info(f"BLOCKED RSI extreme overbought {rsi:.1f} — no BUY")
+        return True
+    if direction == "SELL" and rsi < RSI_EXTREME_OS:
+        log.info(f"BLOCKED RSI extreme oversold {rsi:.1f} — no SELL")
+        return True
+    return False
 
 # ============================================================
 # SPREAD / VOLATILITY
@@ -846,8 +855,7 @@ def quantum_volatility_ok(df):
 
 def false_breakout_filter(df, direction):
     if len(df) < 3: return False
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    last = df.iloc[-1]; prev = df.iloc[-2]
     atr  = float(df.iloc[-1]["atr"])
     if direction == "BUY":
         return float(last["close"]) > float(prev["high"]) - atr * 0.08
@@ -859,13 +867,14 @@ def correlated_signal_block(symbol_key):
         if symbol_key in group:
             active = sum(1 for s in group if time.time() - _signal_sent.get(s, 0) < 3600)
             if active >= MAX_OPEN_CORRELATED:
-                log.info(f"Correlation blocker active for {symbol_key}")
+                log.info(f"Correlation blocker: {symbol_key}")
                 return True
     return False
 
 def duplicate_signal(symbol_key, direction):
+    """FIX 5 — longer duplicate window prevents same-session direction conflicts."""
     now      = time.time()
-    cooldown = DUPLICATE_WINDOWS.get(symbol_key, 600)
+    cooldown = DUPLICATE_WINDOWS.get(symbol_key, 1800)
     with signal_lock:
         last_dir  = _last_signal_direction.get(symbol_key)
         last_time = _last_signal_time.get(symbol_key, 0)
@@ -879,9 +888,6 @@ def duplicate_signal(symbol_key, direction):
 def economic_news_block():
     return False
 
-# ============================================================
-# ANTICIPATION DETECTOR — fires ~2 min early
-# ============================================================
 def anticipation_entry(df, symbol_key, direction):
     if len(df) < 6: return False
     last  = df.iloc[-1]
@@ -920,11 +926,12 @@ def build_score(df, trend, symbol_key):
     bullish_break = float(last["close"]) > float(df.iloc[-2]["high"]) + atr * 0.08
     bearish_break = float(last["close"]) < float(df.iloc[-2]["low"])  - atr * 0.08
 
+    # FIX 4 — RSI bands tightened to avoid extremes
     buy = {
         "HTF":   trend == "BULL",
         "EMA":   ema9 > ema21 > ema50,
         "VWAP":  float(last["close"]) > float(last["vwap"]),
-        "RSI":   52 <= rsi <= 75,
+        "RSI":   52 <= rsi <= RSI_EXTREME_OB,   # FIX 4 — capped at extreme OB
         "ADX":   adx > ADX_THRESHOLD,
         "VOL":   volma > 0 and vol > volma * VOL_MULT,
         "FVG":   bull_fvg,
@@ -939,7 +946,7 @@ def build_score(df, trend, symbol_key):
         "HTF":   trend == "BEAR",
         "EMA":   ema9 < ema21 < ema50,
         "VWAP":  float(last["close"]) < float(last["vwap"]),
-        "RSI":   25 <= rsi <= 48,
+        "RSI":   RSI_EXTREME_OS <= rsi <= 48,   # FIX 4 — floored at extreme OS
         "ADX":   adx > ADX_THRESHOLD,
         "VOL":   volma > 0 and vol > volma * VOL_MULT,
         "FVG":   bear_fvg,
@@ -991,19 +998,19 @@ def wizard_ai_confirmation(df, symbol_key, direction):
 
     score = 0
     if direction == "BUY":
-        if close > ema50:                  score += 3
-        if ema50  > ema200:                score += 2
-        if rsi    > 52:                    score += 2
-        if adx    > WIZARD_ADX_THRESHOLD:  score += 2
-        if aox    > 0:                     score += 2
-        if vwap   > 0 and close > vwap:    score += 2
+        if close > ema50:                 score += 3
+        if ema50  > ema200:               score += 2
+        if 52 <= rsi <= RSI_EXTREME_OB:   score += 2   # FIX 4
+        if adx    > WIZARD_ADX_THRESHOLD: score += 2
+        if aox    > 0:                    score += 2
+        if vwap   > 0 and close > vwap:   score += 2
     else:
-        if close < ema50:                  score += 3
-        if ema50  < ema200:                score += 2
-        if rsi    < 48:                    score += 2
-        if adx    > WIZARD_ADX_THRESHOLD:  score += 2
-        if aox    < 0:                     score += 2
-        if vwap   > 0 and close < vwap:    score += 2
+        if close < ema50:                 score += 3
+        if ema50  < ema200:               score += 2
+        if RSI_EXTREME_OS <= rsi <= 48:   score += 2   # FIX 4
+        if adx    > WIZARD_ADX_THRESHOLD: score += 2
+        if aox    < 0:                    score += 2
+        if vwap   > 0 and close < vwap:   score += 2
 
     if volma > 0 and volume > volma * WIZARD_VOLUME_MULT: score += 2
 
@@ -1033,16 +1040,12 @@ def wizard_ai_confirmation(df, symbol_key, direction):
 # ULTRA SNIPER SCORE
 # ============================================================
 def ultra_sniper_score(df, symbol_key, direction):
-    score = 0
-    last  = df.iloc[-1]
-    rsi   = float(last["rsi"])
-    adx   = float(last["adx"])
+    score = 0; last = df.iloc[-1]
+    rsi   = float(last["rsi"]); adx = float(last["adx"])
     vol   = float(last["volume"])
     volma = float(last["volma"]) if not pd.isna(last["volma"]) else 0
-
     bull_sweep, bear_sweep = detect_liquidity_sweep(df, symbol_key)
-    bull_fvg,   bear_fvg   = fair_value_gap(df)
-
+    bull_fvg, bear_fvg = fair_value_gap(df)
     if direction == "BUY"  and mtf_bullish(symbol_key, df): score += 4
     if direction == "SELL" and mtf_bearish(symbol_key, df): score += 4
     if wavetrend_confirmation(df, direction): score += 3
@@ -1053,8 +1056,8 @@ def ultra_sniper_score(df, symbol_key, direction):
     if break_of_structure(df, direction):     score += 2
     if institutional_volume(df):              score += 2
     if strong_candle(df, direction):          score += 2
-    if direction == "BUY"  and rsi > 55:      score += 2
-    if direction == "SELL" and rsi < 45:      score += 2
+    if direction == "BUY"  and 55 <= rsi <= RSI_EXTREME_OB: score += 2   # FIX 4
+    if direction == "SELL" and RSI_EXTREME_OS <= rsi <= 45: score += 2   # FIX 4
     if adx > 25:                              score += 2
     if volma > 0 and vol > volma * 1.5:       score += 3
     return score
@@ -1063,7 +1066,8 @@ def ultra_sniper_score(df, symbol_key, direction):
 # HELPERS
 # ============================================================
 def determine_best_direction(buy_score, sell_score):
-    return "SELL" if buy_score >= sell_score else "BUY"
+    # FIX 7 — was INVERTED in original code (returned SELL when buy>sell)
+    return "BUY" if buy_score >= sell_score else "SELL"
 
 def trade_quality(score):
     if   score >= 28: return "GOD-TIER SCALP"
@@ -1078,7 +1082,7 @@ def breakout_quality(score):
 
 def adaptive_risk(session):
     return {"Asian Precision": 0.6, "London": 1.0, "NY Killzone": 1.2,
-            "India Open": 1.0, "India Midday": 0.8, "India Close": 0.7}.get(session, 0.9)
+            "India Open": 1.0, "India Midday": 0.8}.get(session, 0.9)
 
 def detect_market_regime(df):
     return "SCALP"
@@ -1098,11 +1102,11 @@ def calc_levels(price, atr, symbol_key, df, direction, regime):
                   if direction == "BUY"
                   else float(recent["high"].max()) - price)
 
-    atr_sl    = atr * ATR_MULT * ATR_MARKET_MULTIPLIER[symbol_key]
-    swing_cap = atr * 1.5 * ATR_MARKET_MULTIPLIER[symbol_key]
+    atr_sl     = atr * ATR_MULT * ATR_MARKET_MULTIPLIER[symbol_key]
+    swing_cap  = atr * 1.5 * ATR_MARKET_MULTIPLIER[symbol_key]
     swing_dist = min(swing_dist, swing_cap)
-    sl_dist   = max(min_sl, max(atr_sl, swing_dist * 0.75))
-    rr        = get_dynamic_rr(symbol_key, regime)
+    sl_dist    = max(min_sl, max(atr_sl, swing_dist * 0.75))  # FIX 3 — min_sl always enforced
+    rr         = get_dynamic_rr(symbol_key, regime)
 
     if direction == "BUY":
         sl, tp = price - sl_dist, price + sl_dist * rr
@@ -1111,18 +1115,26 @@ def calc_levels(price, atr, symbol_key, df, direction, regime):
 
     return round(sl, decimals), round(tp, decimals), round(sl_dist, decimals), rr
 
-def lot_for_risk(price, sl, symbol_key, risk_multiplier=1.0):
-    risk    = 50 * risk_multiplier
+# FIX 2 — Lot size always based on $50 risk, no adaptive multiplier distortion
+def lot_for_risk(price, sl, symbol_key):
+    """Fixed $50 risk for all markets."""
+    risk    = 50.0
     sl_dist = abs(price - sl)
     if sl_dist <= 0: return 0.01
-    lot  = risk / (sl_dist * DOLLAR_PER_POINT[symbol_key])
-    caps = {"XAU/USD": 1.50, "NAS100": 2.00, "SPX500": 2.00,
-            "EUR/USD": 3.00, "GBP/JPY": 2.00,
-            "NIFTY50": 50.0, "BANKNIFTY": 50.0, "SENSEX": 50.0,
-            "RELIANCE": 500.0, "TCS": 500.0}
+
+    lot = risk / (sl_dist * DOLLAR_PER_POINT[symbol_key])
+
+    caps = {
+        "XAU/USD":   1.50, "NAS100":    2.00, "SPX500":    2.00,
+        "EUR/USD":   3.00, "GBP/JPY":   2.00,
+        "NIFTY50":   50.0, "BANKNIFTY": 50.0, "SENSEX":    50.0,
+        "RELIANCE":  500.0,"TCS":       500.0,
+    }
+
     if symbol_key in ["NIFTY50","BANKNIFTY","SENSEX","RELIANCE","TCS"]:
-        lot = max(1.0, round(lot))   # whole lots only for India
+        lot = max(1.0, round(lot))
         return float(lot)
+
     return round(max(0.01, min(lot, caps[symbol_key])), 3)
 
 # ============================================================
@@ -1135,14 +1147,24 @@ def master_signal(symbol_key, df, session, trend, regime,
     direction = determine_best_direction(buy_score, sell_score)
     best      = max(buy_score, sell_score)
 
+    # FIX 9 — hard minimum score block
+    if best < ABSOLUTE_MIN_SCORE:
+        log.info(f"REJECTED {symbol_key} score {best} below absolute minimum {ABSOLUTE_MIN_SCORE}")
+        return None, None, None
+
     if not scalp_macro_filter(df, direction):
         log.info(f"REJECTED {symbol_key} scalp macro filter")
+        return None, None, None
+
+    # FIX 4 — RSI extreme hard block
+    rsi = float(df.iloc[-1]["rsi"])
+    if rsi_extreme_block(rsi, direction):
         return None, None, None
 
     if ENABLE_WIZARD_AI:
         wizard_pass, wizard_score = wizard_ai_confirmation(df, symbol_key, direction)
         if not wizard_pass:
-            log.info(f"REJECTED {symbol_key} Wizard AI failed | Score: {wizard_score}")
+            log.info(f"REJECTED {symbol_key} Wizard AI | Score: {wizard_score}")
             return None, None, None
         best += int(wizard_score * 0.30)
     else:
@@ -1151,9 +1173,9 @@ def master_signal(symbol_key, df, session, trend, regime,
     sniper = ultra_sniper_score(df, symbol_key, direction)
     best  += sniper
 
-    required = SESSION_THRESHOLDS.get(session, 12)
+    required = SESSION_THRESHOLDS.get(session, 20)
     if best < required:
-        log.info(f"REJECTED {symbol_key} session score too low ({best} < {required})")
+        log.info(f"REJECTED {symbol_key} session score {best} < {required}")
         return None, None, None
 
     if VOLATILITY_KILL and not quantum_volatility_ok(df):
@@ -1166,7 +1188,7 @@ def master_signal(symbol_key, df, session, trend, regime,
 
     is_early = anticipation_entry(df, symbol_key, direction)
     if is_early:
-        log.info(f"ANTICIPATION TRIGGER {symbol_key} — firing 2 min early")
+        log.info(f"ANTICIPATION TRIGGER {symbol_key}")
         best += 2
 
     return direction, best, wizard_score
@@ -1188,9 +1210,14 @@ def execute_trade(symbol_key, df, direction, best, wizard_score,
 
     price += EXECUTION_BUFFER[symbol_key] if direction == "BUY" else -EXECUTION_BUFFER[symbol_key]
     sl, tp, sl_dist, rr = calc_levels(price, atr, symbol_key, df, direction, regime)
-    risk_mult = adaptive_risk(session)
-    lot       = lot_for_risk(price, sl, symbol_key, risk_mult)
-    quality   = trade_quality(best)
+
+    # FIX 10 — validate SL before firing
+    if not validate_sl_distance(symbol_key, price, sl):
+        return
+
+    # FIX 2 — fixed $50 risk lot size
+    lot     = lot_for_risk(price, sl, symbol_key)
+    quality = trade_quality(best)
     signal_num, entry_type = get_signal_number(symbol_key, session)
 
     log_signal(symbol_key, direction, best, rr, price, sl, tp,
@@ -1234,17 +1261,17 @@ def execute_trade(symbol_key, df, direction, best, wizard_score,
         f"⏰ *Session:* {session}\n"
         f"📡 *Data Source:* {source}\n"
         f"🧠 *Mode:* {'ASIA SCALP PRECISION' if asia_mode else 'CORE SCALP MODE'}\n\n"
-        f"💵 *Lot:* {lot}\n\n"
+        f"💵 *Lot:* {lot} *(Fixed $50 Risk)*\n\n"
         f"✅ *Conditions:*\n{cond_text}\n\n"
         f"🕐 *Entry Mode:* {'⚡ ANTICIPATION — 2MIN EARLY' if is_early else 'STANDARD'}\n"
         f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
         f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION*"
     )
     send_telegram(msg)
-    log.info(f"SCALP SIGNAL {symbol_key} {direction} | Entry:{price} SL:{sl} TP:{tp} RR:{rr} Q:{quality}")
+    log.info(f"SCALP SIGNAL {symbol_key} {direction} | Entry:{price} SL:{sl} TP:{tp} RR:{rr} Lot:{lot} Q:{quality}")
 
 # ============================================================
-# EXECUTE BREAKOUT TRADE (15M / 30M)
+# EXECUTE BREAKOUT TRADE
 # ============================================================
 def execute_breakout(symbol_key, df, direction, score, session, source):
     price = float(df.iloc[-1]["close"])
@@ -1255,14 +1282,17 @@ def execute_breakout(symbol_key, df, direction, score, session, source):
     vol   = float(df.iloc[-1]["volume"])
     volma = float(df.iloc[-1]["volma"]) if not pd.isna(df.iloc[-1]["volma"]) else 0
 
-    # Wider SL for breakout (5-candle swing on 15M)
-    recent   = df.tail(5)
+    # FIX 4 — RSI extreme block for breakout too
+    if rsi_extreme_block(rsi, direction):
+        return
+
+    recent     = df.tail(5)
     swing_dist = (price - float(recent["low"].min())
                   if direction == "BUY"
                   else float(recent["high"].max()) - price)
-    min_sl   = MARKETS[symbol_key]["min_sl"] * 2.0
-    sl_dist  = max(min_sl, swing_dist * 0.90)
-    rr       = get_dynamic_rr(symbol_key, "BREAKOUT")
+    min_sl     = MARKETS[symbol_key]["min_sl"] * 2.0
+    sl_dist    = max(min_sl, swing_dist * 0.90)
+    rr         = get_dynamic_rr(symbol_key, "BREAKOUT")
 
     price += EXECUTION_BUFFER[symbol_key] if direction == "BUY" else -EXECUTION_BUFFER[symbol_key]
 
@@ -1271,16 +1301,22 @@ def execute_breakout(symbol_key, df, direction, score, session, source):
     else:
         sl, tp = round(price + sl_dist, dec), round(price - sl_dist * rr, dec)
 
-    lot     = lot_for_risk(price, sl, symbol_key, adaptive_risk(session))
+    # FIX 10 — validate SL
+    if not validate_sl_distance(symbol_key, price, sl):
+        return
+
+    # FIX 2 — fixed $50 risk
+    lot     = lot_for_risk(price, sl, symbol_key)
     quality = breakout_quality(score)
 
     bull_sweep, bear_sweep = detect_liquidity_sweep(df, symbol_key)
-    sweep_tag = "✅ LIQUIDITY SWEEP CONFIRMED" if (direction=="BUY" and bull_sweep) or (direction=="SELL" and bear_sweep) else "⚠️ NO SWEEP — MOMENTUM BREAK"
+    sweep_tag = ("✅ LIQUIDITY SWEEP CONFIRMED"
+                 if (direction=="BUY" and bull_sweep) or (direction=="SELL" and bear_sweep)
+                 else "⚠️ NO SWEEP — MOMENTUM BREAK")
 
     action_emoji = "📈" if direction == "BUY" else "📉"
     mtype        = MARKETS[symbol_key]["market_type"]
     market_flag  = "🇮🇳 *INDIA INTRADAY*\n" if mtype == "india" else "🌍 *GLOBAL MARKET*\n"
-    signal_label = "BREAKOUT 🚀" if direction == "BUY" else "BREAKDOWN 💥"
 
     log_signal(symbol_key, direction, score, rr, price, sl, tp,
                session, "BREAKOUT", "15M / 30M", "BREAKOUT")
@@ -1292,7 +1328,7 @@ def execute_breakout(symbol_key, df, direction, score, session, source):
         f"🔱 *PRIORITY MARKET*\n"
         f"{market_flag}\n"
         f"🔥 *Action:* {direction} {action_emoji}\n"
-        f"📍 *Entry Type:* {signal_label}\n"
+        f"📍 *Entry Type:* {'BREAKOUT 🚀' if direction=='BUY' else 'BREAKDOWN 💥'}\n"
         f"🚀 *Signal Type:* BREAKOUT / LIQUIDITY SWEEP\n"
         f"⏱ *Timeframe:* 15M / 30M\n"
         f"⭐ *Breakout Score:* {score}\n"
@@ -1306,21 +1342,20 @@ def execute_breakout(symbol_key, df, direction, score, session, source):
         f"📊 *Volume vs MA:* {(vol/volma*100):.0f}% of avg\n"
         f"⏰ *Session:* {session}\n"
         f"📡 *Data Source:* {source}\n\n"
-        f"💵 *Lot:* {lot}\n\n"
+        f"💵 *Lot:* {lot} *(Fixed $50 Risk)*\n\n"
         f"🛡 *ELITE BREAKOUT FILTER ACTIVE*\n"
         f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION*"
     )
     send_telegram(msg)
-    log.info(f"BREAKOUT SIGNAL {symbol_key} {direction} | Entry:{price} SL:{sl} TP:{tp} RR:{rr} Score:{score}")
+    log.info(f"BREAKOUT SIGNAL {symbol_key} {direction} | Entry:{price} SL:{sl} TP:{tp} Lot:{lot}")
 
 # ============================================================
-# PROCESS SYMBOL — SCALP (1M/5M, signal #1 only)
+# PROCESS SYMBOL — SCALP
 # ============================================================
 def process_symbol(symbol_key):
     log.info(f"Scanning {symbol_key}")
 
     if _daily_signal_count[symbol_key] >= MAX_SIGNALS_PER_DAY[symbol_key]:
-        log.info(f"REJECTED {symbol_key} daily cap")
         return
     if weekend_block(symbol_key): return
     if daily_loss_lock():         return
@@ -1332,10 +1367,8 @@ def process_symbol(symbol_key):
     ok, session = in_session(symbol_key)
     if not ok or session not in ALLOWED_SESSIONS:
         return
-    if economic_news_block():
-        return
 
-    # ---- SIGNAL #1 ONLY GATE ----
+    # FIX 1 — signal #1 only gate (checked BEFORE fetching data)
     if not scalp_signal_allowed(symbol_key, session):
         return
 
@@ -1350,7 +1383,6 @@ def process_symbol(symbol_key):
 
     df = add_ind(df)
     if df is None or len(df) < 50:
-        log.info(f"REJECTED {symbol_key} insufficient data after indicators")
         return
     if volatility_danger(df, symbol_key):
         log.info(f"REJECTED {symbol_key} extreme volatility")
@@ -1358,8 +1390,8 @@ def process_symbol(symbol_key):
 
     price = float(df.iloc[-1]["close"])
     atr   = float(df.iloc[-1]["atr"])
-    if price <= 0:
-        return
+    rsi   = float(df.iloc[-1]["rsi"])
+    if price <= 0: return
 
     trend      = get_trend(symbol_key)
     regime     = detect_market_regime(df)
@@ -1389,12 +1421,22 @@ def process_symbol(symbol_key):
 
     direction = determine_best_direction(buy_score, sell_score)
 
-    if symbol_key not in ["XAU/USD"]:  # only gold allowed countertrend
+    # FIX 8 — countertrend requires RSI confirmation
+    if symbol_key not in ["XAU/USD"]:
         if trend == "BULL" and direction == "SELL":
             log.info(f"REJECTED {symbol_key} countertrend SELL")
             return
         if trend == "BEAR" and direction == "BUY":
             log.info(f"REJECTED {symbol_key} countertrend BUY")
+            return
+
+    # FIX 8 — for XAU/USD countertrend: require RSI extreme confirmation
+    if symbol_key == "XAU/USD":
+        if trend == "BULL" and direction == "SELL" and rsi > 45:
+            log.info(f"REJECTED XAU/USD countertrend SELL — RSI {rsi:.1f} not extreme enough")
+            return
+        if trend == "BEAR" and direction == "BUY" and rsi < 55:
+            log.info(f"REJECTED XAU/USD countertrend BUY — RSI {rsi:.1f} not extreme enough")
             return
 
     demand_zone, supply_zone = detect_supply_demand_zones(df)
@@ -1412,8 +1454,7 @@ def process_symbol(symbol_key):
         buy, sell, buy_score, sell_score,
         struct_buy_score, struct_sell_score
     )
-    if direction is None:
-        return
+    if direction is None: return
 
     sniper_score = ultra_sniper_score(df, symbol_key, direction)
     is_early     = anticipation_entry(df, symbol_key, direction)
@@ -1422,7 +1463,7 @@ def process_symbol(symbol_key):
 
     now = time.time()
     if now - _signal_sent[symbol_key] < SIGNAL_COOLDOWN:
-        log.info(f"REJECTED {symbol_key} cooldown {int(SIGNAL_COOLDOWN-(now-_signal_sent[symbol_key]))}s")
+        log.info(f"REJECTED {symbol_key} cooldown")
         return
 
     with signal_lock:
@@ -1434,35 +1475,30 @@ def process_symbol(symbol_key):
                   regime, buy, sell, source, asia_mode, is_early)
 
 # ============================================================
-# PROCESS BREAKOUT — runs separately on 15M data
+# PROCESS BREAKOUT
 # ============================================================
 def process_breakout(symbol_key):
     ok, session = in_session(symbol_key)
-    if not ok or session not in ALLOWED_SESSIONS:
-        return
+    if not ok or session not in ALLOWED_SESSIONS: return
     if daily_loss_lock() or loss_streak_lock(): return
 
     df, source = get_entry_data(symbol_key, for_breakout=True)
-    if df is None or len(df) < 60:
-        return
+    if df is None or len(df) < 60: return
 
     df = add_ind(df)
-    if df is None or len(df) < 50:
-        return
+    if df is None or len(df) < 50: return
 
     direction, score = detect_breakout_signal(df, symbol_key)
-    if direction is None:
-        return
+    if direction is None: return
 
     required = BREAKOUT_SESSION_THRESHOLDS.get(session, 14)
     if score < required:
         log.info(f"BREAKOUT REJECTED {symbol_key} score {score} < {required}")
         return
 
-    # Separate cooldown key for breakout signals
     bk_key = f"BK_{symbol_key}"
     now    = time.time()
-    if now - _signal_sent.get(bk_key, 0) < 1800:  # 30 min breakout cooldown
+    if now - _signal_sent.get(bk_key, 0) < 1800:
         log.info(f"BREAKOUT {symbol_key} cooldown active")
         return
 
@@ -1484,11 +1520,16 @@ def main():
         f"🏢 RELIANCE | 💻 TCS\n\n"
         f"⏱ *SCALP MODE:* 1M / 5M — Signal #1 Only Per Session\n"
         f"💥 *BREAKOUT MODE:* 15M / 30M — Liquidity Sweep\n\n"
-        f"✅ Scalp Macro Filter | 🎯 Sniper Score\n"
-        f"⚛ WaveTrend | 📊 EMA Stack\n"
-        f"🔒 Correlation Blocker | 🚫 False Break Filter\n"
-        f"🧠 Wizard AI | 🛡 Anticipation Entry\n"
-        f"🚫 Signals #2 & #3 Blocked\n"
+        f"✅ FIX 1: Signal #2/#3 Blocked\n"
+        f"✅ FIX 2: Fixed $50 Risk Lot Size\n"
+        f"✅ FIX 3: Min SL Enforced\n"
+        f"✅ FIX 4: RSI Extreme Hard Block\n"
+        f"✅ FIX 5: Duplicate Window Extended\n"
+        f"✅ FIX 6: India Close Removed\n"
+        f"✅ FIX 7: Direction Logic Corrected\n"
+        f"✅ FIX 8: Countertrend RSI Confirmation\n"
+        f"✅ FIX 9: Absolute Min Score = 20\n"
+        f"✅ FIX 10: SL Validation Before Fire\n"
         f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION"
     )
 
@@ -1497,11 +1538,8 @@ def main():
         try:
             reset_daily()
 
-            all_symbols = list(PRIORITY_MARKETS)
-
-            # Scalp pass — every loop
-            with ThreadPoolExecutor(max_workers=len(all_symbols)) as executor:
-                futures = [executor.submit(process_symbol, s) for s in all_symbols]
+            with ThreadPoolExecutor(max_workers=len(PRIORITY_MARKETS)) as executor:
+                futures = [executor.submit(process_symbol, s) for s in PRIORITY_MARKETS]
                 time.sleep(0.25)
                 for future in as_completed(futures):
                     try:
@@ -1509,10 +1547,9 @@ def main():
                     except Exception as e:
                         log.error(f"Scalp thread error: {e}")
 
-            # Breakout pass — every 5 loops (~5 seconds)
             if loop_count % 5 == 0:
-                with ThreadPoolExecutor(max_workers=len(all_symbols)) as executor:
-                    futures = [executor.submit(process_breakout, s) for s in all_symbols]
+                with ThreadPoolExecutor(max_workers=len(PRIORITY_MARKETS)) as executor:
+                    futures = [executor.submit(process_breakout, s) for s in PRIORITY_MARKETS]
                     for future in as_completed(futures):
                         try:
                             future.result()
