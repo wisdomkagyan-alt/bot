@@ -1199,7 +1199,7 @@ def ultra_sniper_score(df, symbol_key, direction):
 # HELPERS
 # ============================================================
 def determine_best_direction(buy_score, sell_score):
-    return "BUY" if buy_score >= sell_score else "SELL"
+    return "SELL" if buy_score >= sell_score else "BUY"
 
 def trade_quality(score):
     if   score >= 28: return "GOD-TIER SCALP"
