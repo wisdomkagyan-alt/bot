@@ -77,7 +77,7 @@ MARKETS = {
         "price_hi":    float("inf"),
         "sessions":    [0, 20],
         "decimals":    2,
-        "min_sl":      3.0,        # tighter for scalp
+        "min_sl":      1.5,        # tight scalp SL
         "tier":        "GOLD ELITE",
         "bias":        "BULL",
         "rr":          1.8,
@@ -91,7 +91,7 @@ MARKETS = {
         "price_hi":    float("inf"),
         "sessions":    [0, 21],
         "decimals":    1,
-        "min_sl":      20.0,
+        "min_sl":      12.0,
         "tier":        "NASDAQ ELITE",
         "bias":        "BULL",
         "rr":          1.7,
@@ -105,7 +105,7 @@ MARKETS = {
         "price_hi":    float("inf"),
         "sessions":    [0, 21],
         "decimals":    1,
-        "min_sl":      10.0,
+        "min_sl":      6.0,
         "tier":        "SP500 ELITE",
         "bias":        "BULL",
         "rr":          1.6,
@@ -119,7 +119,7 @@ MARKETS = {
         "price_hi":    float("inf"),
         "sessions":    [0, 24],
         "decimals":    5,
-        "min_sl":      0.00050,
+        "min_sl":      0.00025,
         "tier":        "FOREX MAJOR ELITE",
         "bias":        "BULL",
         "rr":          1.5,
@@ -133,7 +133,7 @@ MARKETS = {
         "price_hi":    float("inf"),
         "sessions":    [0, 24],
         "decimals":    3,
-        "min_sl":      0.080,
+        "min_sl":      0.040,
         "tier":        "FOREX VOLATILITY ELITE",
         "bias":        "BULL",
         "rr":          1.8,
@@ -153,14 +153,14 @@ SYMBOLS = [
 # ============================================================
 # CORE SETTINGS — SCALP TUNED
 # ============================================================
-ATR_MULT               = 0.18          # tighter stops for scalp
+ATR_MULT               = 0.12          # ultra-tight scalp SL
 VOL_MULT               = 1.05          # slightly lower volume bar for scalp
 ADX_THRESHOLD          = 20            # lower ADX for short-term momentum
-SIGNAL_COOLDOWN        = 900           # 15 min cooldown between signals
+SIGNAL_COOLDOWN        = 600           # 10 min cooldown — faster re-entry
 HTF_REFRESH            = 300           # 5 min HTF cache refresh
 MAX_DAILY_LOSS         = -300
 MAX_CONSECUTIVE_LOSSES = 3
-MAIN_LOOP_DELAY        = 3             # faster loop for scalping
+MAIN_LOOP_DELAY        = 1             # 1s loop — fires signal ~2 min early on approach
 
 STDV_PERIOD         = 10              # shorter std dev window
 STDV_THRESHOLD_MULT = 1.10
@@ -1011,6 +1011,27 @@ def economic_news_block():
     return False
 
 # ============================================================
+# ANTICIPATION DETECTOR — fires signal ~2 min BEFORE price
+# touches entry zone, not after. Detects approach momentum.
+# ============================================================
+def anticipation_entry(df, symbol_key, direction):
+    if len(df) < 6:
+        return False
+    last  = df.iloc[-1]
+    price = float(last["close"])
+    atr   = float(last["atr"])
+    aox   = float(last["aox"]) if not pd.isna(last["aox"]) else 0
+    recent   = df.tail(6)
+    key_high = float(recent["high"].max())
+    key_low  = float(recent["low"].min())
+    proximity = atr * 0.50   # within half ATR = approx 1-2 candles early
+    if direction == "SELL":
+        return (key_high - price) <= proximity and aox < 0
+    if direction == "BUY":
+        return (price - key_low) <= proximity and aox > 0
+    return False
+
+# ============================================================
 # BUILD BASE SCORE — SCALP TUNED RSI BANDS
 # ============================================================
 def build_score(df, trend, symbol_key):
@@ -1224,7 +1245,9 @@ def get_dynamic_rr(symbol_key, regime):
 def calc_levels(price, atr, symbol_key, df, direction, regime):
     min_sl   = MARKETS[symbol_key]["min_sl"]
     decimals = MARKETS[symbol_key]["decimals"]
-    recent   = df.tail(5)       # shorter swing lookback for scalp
+
+    # Use last 3 candles only — tighter swing for scalp
+    recent   = df.tail(3)
 
     swing_dist = (
         price - float(recent["low"].min())
@@ -1232,11 +1255,12 @@ def calc_levels(price, atr, symbol_key, df, direction, regime):
         else float(recent["high"].max()) - price
     )
 
-    atr_sl  = atr * ATR_MULT * ATR_MARKET_MULTIPLIER[symbol_key]
-    sl_dist = max(
-        min_sl,
-        min(max(atr_sl, swing_dist * 0.80), swing_dist * 1.05)
-    )
+    # Hard cap swing to 1.5x ATR so SL never bloats
+    atr_sl     = atr * ATR_MULT * ATR_MARKET_MULTIPLIER[symbol_key]
+    swing_cap  = atr * 1.5 * ATR_MARKET_MULTIPLIER[symbol_key]
+    swing_dist = min(swing_dist, swing_cap)
+
+    sl_dist = max(min_sl, max(atr_sl, swing_dist * 0.75))
 
     rr = get_dynamic_rr(symbol_key, regime)
 
@@ -1323,6 +1347,12 @@ def master_signal(symbol_key, df, session, trend, regime,
             log.info(f"REJECTED {symbol_key} false breakout filter")
             return None, None, None
 
+    # ANTICIPATION: allow early trigger if price approaching key level
+    is_early = anticipation_entry(df, symbol_key, direction)
+    if is_early:
+        log.info(f"ANTICIPATION TRIGGER {symbol_key} — firing 2 min early")
+        best += 2   # small bonus for high-quality early entry
+
     return direction, best, wizard_score
 
 # ============================================================
@@ -1330,7 +1360,7 @@ def master_signal(symbol_key, df, session, trend, regime,
 # ============================================================
 def execute_trade(symbol_key, df, direction, best, wizard_score,
                   sniper_score, macro_trend, session, trend,
-                  regime, buy, sell, source, asia_mode):
+                  regime, buy, sell, source, asia_mode, is_early=False):
 
     price = float(df.iloc[-1]["close"])
     atr   = float(df.iloc[-1]["atr"])
@@ -1407,6 +1437,7 @@ def execute_trade(symbol_key, df, direction, best, wizard_score,
         f"💵 *Lot:* {lot}\n\n"
         f"✅ *Conditions:*\n"
         f"{cond_text}\n\n"
+        f"🕐 *Entry Mode:* {'⚡ ANTICIPATION — 2MIN EARLY' if is_early else 'STANDARD'}\n"
         f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
         f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION*"
     )
@@ -1568,6 +1599,7 @@ def process_symbol(symbol_key):
         return
 
     sniper_score = ultra_sniper_score(df, symbol_key, direction)
+    is_early     = anticipation_entry(df, symbol_key, direction)
 
     if duplicate_signal(symbol_key, direction):
         return
@@ -1585,7 +1617,7 @@ def process_symbol(symbol_key):
     execute_trade(
         symbol_key, df, direction, best, wizard_score,
         sniper_score, macro_trend, session, trend,
-        regime, buy, sell, source, asia_mode
+        regime, buy, sell, source, asia_mode, is_early
     )
 
 # ============================================================
