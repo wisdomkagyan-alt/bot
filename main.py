@@ -52,9 +52,9 @@ SESSION_THRESHOLDS = {
     "London":          12,
     "NY Killzone":     12,
     "NY+London":       11,
-    "India Open":      13,
-    "India Midday":    11,
-    "India Close":     12,
+    "India Open":      15,  # raised — stricter for volatile open
+    "India Midday":    12,
+    "India Close":     13,
 }
 
 BREAKOUT_SESSION_THRESHOLDS = {
@@ -133,7 +133,7 @@ MARKETS = {
     "NIFTY50": {
         "mt5": "NIFTY50", "yf": "^NSEI",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 25.0,
+        "sessions": [3, 10], "decimals": 2, "min_sl": 15.0,  # tight 1M scalp
         "tier": "INDIA INDEX ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.6,
         "market_type": "india",
@@ -141,7 +141,7 @@ MARKETS = {
     "BANKNIFTY": {
         "mt5": "BANKNIFTY", "yf": "^NSEBANK",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 50.0,
+        "sessions": [3, 10], "decimals": 2, "min_sl": 20.0,  # tight 1M scalp
         "tier": "INDIA BANK ELITE", "bias": "BULL",
         "rr": 1.8, "sweep_bonus": 2, "wick_ratio": 1.7,
         "market_type": "india",
@@ -149,7 +149,7 @@ MARKETS = {
     "SENSEX": {
         "mt5": "SENSEX", "yf": "^BSESN",
         "price_lo": 0, "price_hi": float("inf"),
-        "sessions": [3, 10], "decimals": 2, "min_sl": 80.0,
+        "sessions": [3, 10], "decimals": 2, "min_sl": 40.0,  # tight 1M scalp
         "tier": "INDIA BSE ELITE", "bias": "BULL",
         "rr": 1.6, "sweep_bonus": 2, "wick_ratio": 1.5,
         "market_type": "india",
@@ -226,7 +226,7 @@ ATR_MARKET_MULTIPLIER = {
 DOLLAR_PER_POINT = {
     "XAU/USD":   100,    "NAS100":    10,     "SPX500":    10,
     "EUR/USD":   100000, "GBP/JPY":   1000,
-    "NIFTY50":   75,     "BANKNIFTY": 25,     "SENSEX":    10,
+    "NIFTY50":   50,     "BANKNIFTY": 20,     "SENSEX":    10,
     "RELIANCE":  1,      "TCS":       1,
 }
 
@@ -260,7 +260,7 @@ MARKET_STRUCTURE = {
 MARKET_MIN_STRUCTURE_SCORE = {
     "XAU/USD":   3, "NAS100":    4, "SPX500":    3,
     "EUR/USD":   3, "GBP/JPY":   3,
-    "NIFTY50":   3, "BANKNIFTY": 3, "SENSEX":    3,
+    "NIFTY50":   4, "BANKNIFTY": 5, "SENSEX":    4,
     "RELIANCE":  3, "TCS":       3,
 }
 
@@ -1120,6 +1120,9 @@ def lot_for_risk(price, sl, symbol_key, risk_multiplier=1.0):
             "EUR/USD": 3.00, "GBP/JPY": 2.00,
             "NIFTY50": 50.0, "BANKNIFTY": 50.0, "SENSEX": 50.0,
             "RELIANCE": 500.0, "TCS": 500.0}
+    if symbol_key in ["NIFTY50","BANKNIFTY","SENSEX","RELIANCE","TCS"]:
+        lot = max(1.0, round(lot))   # whole lots only for India
+        return float(lot)
     return round(max(0.01, min(lot, caps[symbol_key])), 3)
 
 # ============================================================
@@ -1386,7 +1389,7 @@ def process_symbol(symbol_key):
 
     direction = determine_best_direction(buy_score, sell_score)
 
-    if symbol_key not in ["XAU/USD","NIFTY50","BANKNIFTY"]:
+    if symbol_key not in ["XAU/USD"]:  # only gold allowed countertrend
         if trend == "BULL" and direction == "SELL":
             log.info(f"REJECTED {symbol_key} countertrend SELL")
             return
