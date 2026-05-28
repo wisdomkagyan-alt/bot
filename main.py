@@ -46,7 +46,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v5"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v5.1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,16 +71,18 @@ PRIORITY_MARKETS = [
 ]
 
 MARKETS = {
-    "XAU/USD":   {"mt5":"XAUUSD.Qraw","yf":"GC=F",        "price_lo":0,"price_hi":float("inf"),"sessions":[0,20],"decimals":2,"min_sl":7.0,    "tier":"GOLD ELITE",              "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"global"},
-    "NAS100":    {"mt5":"NAS100",      "yf":"^NDX",        "price_lo":0,"price_hi":float("inf"),"sessions":[0,21],"decimals":1,"min_sl":20.0,   "tier":"NASDAQ ELITE",            "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"global"},
-    "SPX500":    {"mt5":"SPX500",      "yf":"^GSPC",       "price_lo":0,"price_hi":float("inf"),"sessions":[0,21],"decimals":1,"min_sl":8.0,    "tier":"SP500 ELITE",             "bias":"BULL","rr":1.6,"sweep_bonus":2,"wick_ratio":1.4,"market_type":"global"},
-    "EUR/USD":   {"mt5":"EURUSD",      "yf":"EURUSD=X",    "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":5,"min_sl":0.0008, "tier":"FOREX MAJOR ELITE",       "bias":"BULL","rr":1.5,"sweep_bonus":1,"wick_ratio":1.3,"market_type":"global"},
-    "GBP/JPY":   {"mt5":"GBPJPY",      "yf":"GBPJPY=X",    "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":3,"min_sl":0.080,  "tier":"FOREX VOLATILITY ELITE",  "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"global"},
-    "NIFTY50":   {"mt5":"NIFTY50",     "yf":"^NSEI",       "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":20.0,   "tier":"INDIA INDEX ELITE",       "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
-    "BANKNIFTY": {"mt5":"BANKNIFTY",   "yf":"^NSEBANK",    "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":40.0,   "tier":"INDIA BANK ELITE",        "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.7,"market_type":"india"},
-    "SENSEX":    {"mt5":"SENSEX",      "yf":"^BSESN",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":60.0,   "tier":"INDIA BSE ELITE",         "bias":"BULL","rr":1.6,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"india"},
-    "RELIANCE":  {"mt5":"RELIANCE",    "yf":"RELIANCE.NS", "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":8.0,    "tier":"INDIA LARGE CAP ELITE",   "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
-    "TCS":       {"mt5":"TCS",         "yf":"TCS.NS",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":12.0,   "tier":"INDIA IT ELITE",          "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
+    # scalp_min_sl = tight SL for 1M/5M scalp signals
+    # min_sl       = wider SL for 15M/30M breakout signals
+    "XAU/USD":   {"mt5":"XAUUSD.Qraw","yf":"GC=F",        "price_lo":0,"price_hi":float("inf"),"sessions":[0,20],"decimals":2,"min_sl":7.0,  "scalp_min_sl":1.5,  "tier":"GOLD ELITE",             "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"global"},
+    "NAS100":    {"mt5":"NAS100",      "yf":"^NDX",        "price_lo":0,"price_hi":float("inf"),"sessions":[0,21],"decimals":1,"min_sl":20.0, "scalp_min_sl":6.0,  "tier":"NASDAQ ELITE",           "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"global"},
+    "SPX500":    {"mt5":"SPX500",      "yf":"^GSPC",       "price_lo":0,"price_hi":float("inf"),"sessions":[0,21],"decimals":1,"min_sl":8.0,  "scalp_min_sl":3.0,  "tier":"SP500 ELITE",            "bias":"BULL","rr":1.6,"sweep_bonus":2,"wick_ratio":1.4,"market_type":"global"},
+    "EUR/USD":   {"mt5":"EURUSD",      "yf":"EURUSD=X",    "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":5,"min_sl":0.0008,"scalp_min_sl":0.0002,"tier":"FOREX MAJOR ELITE",      "bias":"BULL","rr":1.5,"sweep_bonus":1,"wick_ratio":1.3,"market_type":"global"},
+    "GBP/JPY":   {"mt5":"GBPJPY",      "yf":"GBPJPY=X",    "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":3,"min_sl":0.080,"scalp_min_sl":0.030,"tier":"FOREX VOLATILITY ELITE",  "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"global"},
+    "NIFTY50":   {"mt5":"NIFTY50",     "yf":"^NSEI",       "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":20.0, "scalp_min_sl":10.0, "tier":"INDIA INDEX ELITE",       "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
+    "BANKNIFTY": {"mt5":"BANKNIFTY",   "yf":"^NSEBANK",    "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":40.0, "scalp_min_sl":18.0, "tier":"INDIA BANK ELITE",        "bias":"BULL","rr":1.8,"sweep_bonus":2,"wick_ratio":1.7,"market_type":"india"},
+    "SENSEX":    {"mt5":"SENSEX",      "yf":"^BSESN",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":60.0, "scalp_min_sl":25.0, "tier":"INDIA BSE ELITE",         "bias":"BULL","rr":1.6,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"india"},
+    "RELIANCE":  {"mt5":"RELIANCE",    "yf":"RELIANCE.NS", "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":8.0,  "scalp_min_sl":1.5,  "tier":"INDIA LARGE CAP ELITE",   "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
+    "TCS":       {"mt5":"TCS",         "yf":"TCS.NS",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":12.0, "scalp_min_sl":3.0,  "tier":"INDIA IT ELITE",          "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
 }
 
 SYMBOLS = list(MARKETS.keys())
@@ -90,7 +92,8 @@ SYMBOLS = list(MARKETS.keys())
 # ============================================================
 ATR_MULT               = 0.12
 VOL_MULT               = 1.05
-ADX_THRESHOLD          = 25        # FIX 12 — raised to 25 mandatory
+ADX_THRESHOLD          = 25        # default — overridden per session below
+ADX_THRESHOLD_ASIAN    = 20        # Asian session lower volume = lower ADX ok
 SIGNAL_COOLDOWN        = 1800      # FIX 19 — 30min same symbol gap
 HTF_REFRESH            = 300
 MAX_DAILY_LOSS         = -300
@@ -113,8 +116,12 @@ VOLATILITY_KILL     = True
 FALSE_BREAK_FILTER  = True
 
 # FIX 4 — RSI extreme hard blocks
+# RSI_EXTREME_OB: block BUY above this (still overbought risk)
+# RSI_EXTREME_OS: block SELL below this (data error zone)
+# Changed OS from 28 to 15 — RSI 15-28 with strong ADX is valid SELL
 RSI_EXTREME_OB = 72
-RSI_EXTREME_OS = 28
+RSI_EXTREME_OS = 15    # only block if truly impossible (data error)
+RSI_WARN_OS    = 28    # warn zone — allow only if ADX > 30
 
 # FIX 9 — absolute minimum score
 ABSOLUTE_MIN_SCORE = 20
@@ -234,12 +241,13 @@ RR_PROFILE = {
 }
 
 SESSION_THRESHOLDS = {
-    "Asian Precision": 20,
+    "Asian Precision": 18,   # lower ADX/vol in Asia — allow score 18+
     "London":          20,
     "NY Killzone":     20,
     "NY+London":       20,
     "India Open":      20,
     "India Midday":    20,
+    "India Close":     25,   # re-allowed but only high quality score 25+
 }
 
 BREAKOUT_SESSION_THRESHOLDS = {
@@ -308,10 +316,10 @@ DUPLICATE_WINDOWS = {
     "RELIANCE":900,"TCS":900,
 }
 
-# FIX 6 — India Close removed
+# India Close re-allowed but with higher score gate (25+)
 ALLOWED_SESSIONS = [
     "Asian Precision","London","NY+London","NY Killzone",
-    "India Open","India Midday",
+    "India Open","India Midday","India Close",
 ]
 
 # ============================================================
@@ -451,7 +459,8 @@ def in_session(symbol_key):
     if mtype == "india":
         if 225 <= hm < 330: return True,"India Open"
         if 330 <= hm < 450: return True,"India Midday"
-        return False,"Closed"  # FIX 6 — India Close removed
+        if 450 <= hm < 600: return True,"India Close"  # re-allowed with score gate 25+
+        return False,"Closed"
     if 1  <= h < 6:  return True,"Asian Precision"
     if 8  <= h < 11: return True,"London"
     if 13 <= h < 15: return True,"NY Killzone"
@@ -1581,20 +1590,42 @@ def lot_for_risk(price,sl,symbol_key):
     return round(max(0.01,min(lot,caps[symbol_key])),3)
 
 # FIX 3 + FIX 10 — SL validation
-def validate_sl_distance(symbol_key,price,sl):
-    min_sl=MARKETS[symbol_key]["min_sl"]
-    sl_dist=abs(price-sl)
-    if sl_dist<min_sl:
-        log.info(f"BLOCKED {symbol_key} SL {sl_dist:.5f} < min {min_sl}")
+def validate_sl_distance(symbol_key, price, sl, is_scalp=True):
+    """
+    Dual SL validation:
+    - scalp signals use scalp_min_sl (tight)
+    - breakout signals use min_sl (wider)
+    """
+    min_sl = (MARKETS[symbol_key].get("scalp_min_sl", MARKETS[symbol_key]["min_sl"])
+              if is_scalp else MARKETS[symbol_key]["min_sl"])
+    sl_dist = abs(price - sl)
+    if sl_dist < min_sl:
+        log.info(f"BLOCKED {symbol_key} SL dist {sl_dist:.5f} < {'scalp' if is_scalp else 'breakout'} min {min_sl}")
         return False
     return True
 
 # FIX 4 — RSI extreme hard block
-def rsi_extreme_block(rsi,direction):
-    if direction=="BUY"  and rsi>RSI_EXTREME_OB:
-        log.info(f"BLOCKED RSI overbought {rsi:.1f} — no BUY"); return True
-    if direction=="SELL" and rsi<RSI_EXTREME_OS:
-        log.info(f"BLOCKED RSI oversold {rsi:.1f} — no SELL");  return True
+def rsi_extreme_block(rsi, direction, adx=0):
+    """
+    FIX 4 updated:
+    - BUY blocked if RSI > 72 (overbought)
+    - SELL blocked if RSI < 15 (data error / impossible)
+    - SELL warned if RSI < 28 BUT allowed if ADX > 30 (strong trend)
+    """
+    if direction == "BUY" and rsi > RSI_EXTREME_OB:
+        log.info(f"BLOCKED RSI overbought {rsi:.1f} — no BUY")
+        return True
+    if direction == "SELL" and rsi < RSI_EXTREME_OS:
+        log.info(f"BLOCKED RSI {rsi:.1f} — data error (below {RSI_EXTREME_OS})")
+        return True
+    # Warning zone: RSI 15-28 on SELL — only allow with strong ADX
+    if direction == "SELL" and rsi < RSI_WARN_OS:
+        if adx >= 30:
+            log.info(f"ALLOWED RSI {rsi:.1f} warn zone — ADX {adx:.1f} confirms strong trend")
+            return False  # allow it
+        else:
+            log.info(f"BLOCKED RSI {rsi:.1f} warn zone — ADX {adx:.1f} too weak")
+            return True
     return False
 
 # ============================================================
@@ -1676,12 +1707,16 @@ def master_signal(symbol_key,df,session,trend,regime,
 
     # FIX 4 — RSI extreme
     rsi=float(df.iloc[-1]["rsi"])
-    if rsi_extreme_block(rsi,direction): return None,None,None
+    adx_val=float(df.iloc[-1]["adx"])
+    # Session-based ADX threshold
+    adx_min = ADX_THRESHOLD_ASIAN if session=="Asian Precision" else ADX_THRESHOLD
+    if adx_val < adx_min:
+        log.info(f"REJECTED {symbol_key} ADX {adx_val:.1f}<{adx_min} for {session}")
+        return None,None,None,None,None
+    # RSI extreme block — passes ADX for warn zone decision
+    if rsi_extreme_block(rsi, direction, adx_val): return None,None,None,None,None
 
-    # FIX 12 — ADX mandatory
-    adx=float(df.iloc[-1]["adx"])
-    if adx<ADX_THRESHOLD:
-        log.info(f"REJECTED {symbol_key} ADX {adx:.1f}<{ADX_THRESHOLD}"); return None,None,None
+    # FIX 12 — ADX check now done in RSI section below with session awareness
 
     # FIX 13 — session momentum
     if not session_momentum_ok(df,direction):
@@ -1749,8 +1784,8 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
 
     sl,tp,sl_dist,rr=calc_levels(entry,atr,symbol_key,df,direction,regime)
 
-    # FIX 10 — SL validation
-    if not validate_sl_distance(symbol_key,entry,sl): return
+    # FIX 10 — SL validation (scalp mode)
+    if not validate_sl_distance(symbol_key, entry, sl, is_scalp=True): return
 
     # FIX 2 — fixed $50 lot
     lot     = lot_for_risk(entry,sl,symbol_key)
@@ -1812,7 +1847,7 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
         f"\n🔥 *Engine Confluence:* {len(engines_passed) if engines_passed else 1}/4\n"
         f"{conf_text}\n\n"
         f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
-        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v5*"
+        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v5.1*"
     )
     send_telegram(msg)
     log.info(f"SCALP SIGNAL {symbol_key} {direction} | CurrentPrice:{current_price} Entry:{entry} SL:{sl} TP:{tp} Lot:{lot}")
@@ -1875,7 +1910,7 @@ def execute_breakout(symbol_key,df,direction,score,session,source,daily_bias):
     price+=EXECUTION_BUFFER[symbol_key] if direction=="BUY" else -EXECUTION_BUFFER[symbol_key]
     if direction=="BUY":  sl,tp=round(price-sl_dist,dec),round(price+sl_dist*rr,dec)
     else:                 sl,tp=round(price+sl_dist,dec),round(price-sl_dist*rr,dec)
-    if not validate_sl_distance(symbol_key,price,sl): return
+    if not validate_sl_distance(symbol_key, price, sl, is_scalp=False): return
     lot=lot_for_risk(price,sl,symbol_key); quality=breakout_quality(score)
     bs,ss=detect_liquidity_sweep(df,symbol_key)
     sweep_tag="✅ LIQUIDITY SWEEP CONFIRMED" if (direction=="BUY" and bs) or (direction=="SELL" and ss) else "⚠️ MOMENTUM BREAK"
@@ -2094,7 +2129,7 @@ def main():
         f"✅ FIX 17: Trailing SL Guide\n"
         f"✅ FIX 18: News Time Block\n"
         f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n✅ FIX 21: ADX Spike Block (>60 blocked)\n✅ FIX 22: RSI Impossible Block (<10 or >90)\n✅ FIX 23: ATR Sanity Check Per Market\n✅ FIX 24: Candle Sanity Check\n✅ FIX 25: Volume Sanity Check\n✅ FIX 26: Price Range Sanity Check\n\n"
-        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v5\n\n"
+        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v5.1\n\n"
         f"🔥 4-ENGINE CONFLUENCE SYSTEM:\n"
         f"ENGINE 1: Momentum Scalp\n"
         f"ENGINE 2: RSI Divergence\n"
