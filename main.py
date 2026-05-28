@@ -46,7 +46,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v4"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v5"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -176,6 +176,30 @@ PRICE_SANITY = {
     "RELIANCE":  {"min": 500,    "max": 5000   },
     "TCS":       {"min": 1000,   "max": 8000   },
 }
+
+# ============================================================
+# v5 ENGINE CONFIGS
+# ============================================================
+DIV_LOOKBACK            = 30
+DIV_MIN_STRENGTH        = 3.0
+DIV_SWING_BARS          = 2
+PA_MIN_BODY_RATIO       = 0.55
+PA_PIN_WICK_RATIO       = 2.0
+PA_ENGULF_RATIO         = 1.10
+PA_MIN_SCORE            = 5
+SWEEP_EQUAL_THRESHOLD   = 0.0005
+SWEEP_PDH_PDL_BUFFER    = 0.0003
+SWEEP_ROUND_NUMBERS = {
+    "XAU/USD":50.0,"NAS100":100.0,"SPX500":50.0,
+    "EUR/USD":0.0050,"GBP/JPY":0.500,
+    "NIFTY50":100.0,"BANKNIFTY":200.0,"SENSEX":500.0,
+    "RELIANCE":10.0,"TCS":20.0,
+}
+SWEEP_VOL_MULT          = 1.5
+MIN_ENGINES_CONFLUENCE  = 2
+CONFLUENCE_BONUS        = {2:0, 3:5, 4:10}
+
+
 
 
 # FIX 15 — max entry drift %
@@ -633,6 +657,489 @@ def validate_signal_indicators(rsi, adx, atr, symbol_key, direction):
         return False
 
     return True
+
+
+# ============================================================
+# ENGINE 2 — RSI DIVERGENCE DETECTOR
+# Bullish: price lower low + RSI higher low (near support)
+# Bearish: price higher high + RSI lower high (near resistance)
+# Based on PDF strategy — 5M timeframe, 1:2 RR
+# ============================================================
+def find_swing_lows(lows, rsi_vals, n=3):
+    """Find swing lows in recent bars."""
+    swings = []
+    for i in range(1, len(lows)-1):
+        if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]:
+            swings.append((i, lows[i], rsi_vals[i]))
+    return swings[-n:] if len(swings) >= n else swings
+
+def find_swing_highs(highs, rsi_vals, n=3):
+    """Find swing highs in recent bars."""
+    swings = []
+    for i in range(1, len(highs)-1):
+        if highs[i] >= highs[i-1] and highs[i] >= highs[i+1]:
+            swings.append((i, highs[i], rsi_vals[i]))
+    return swings[-n:] if len(swings) >= n else swings
+
+def detect_rsi_divergence(df, symbol_key):
+    """
+    ENGINE 2: RSI Divergence detection.
+    Returns: (bull_div, bear_div, strength, description)
+    """
+    if len(df) < DIV_LOOKBACK:
+        return False, False, 0, ""
+
+    recent = df.tail(DIV_LOOKBACK)
+    lows   = recent["low"].astype(float).values
+    highs  = recent["high"].astype(float).values
+    closes = recent["close"].astype(float).values
+    rsi    = recent["rsi"].astype(float).values
+
+    bull_div = bear_div = False
+    strength = 0
+    desc     = ""
+
+    # BULLISH: price lower low + RSI higher low
+    swing_lows = find_swing_lows(lows, rsi)
+    if len(swing_lows) >= 2:
+        l1 = swing_lows[-2]  # older
+        l2 = swing_lows[-1]  # newer
+        if l2[1] < l1[1] and l2[2] > l1[2]:
+            rsi_diff = l2[2] - l1[2]
+            if rsi_diff >= DIV_MIN_STRENGTH:
+                bull_div = True
+                strength = round(rsi_diff, 1)
+                desc     = f"Price ↓{round(l1[1]-l2[1],2)} RSI ↑{strength}"
+
+    # BEARISH: price higher high + RSI lower high
+    swing_highs = find_swing_highs(highs, rsi)
+    if len(swing_highs) >= 2:
+        h1 = swing_highs[-2]
+        h2 = swing_highs[-1]
+        if h2[1] > h1[1] and h2[2] < h1[2]:
+            rsi_diff = h1[2] - h2[2]
+            if rsi_diff >= DIV_MIN_STRENGTH:
+                bear_div = True
+                strength = round(rsi_diff, 1)
+                desc     = f"Price ↑{round(h2[1]-h1[1],2)} RSI ↓{strength}"
+
+    return bull_div, bear_div, strength, desc
+
+def divergence_structure_break(df, direction):
+    """
+    Confirms structure break after RSI divergence.
+    BUY:  close > last swing high (buyers stepping in)
+    SELL: close < last swing low  (sellers gaining control)
+    """
+    if len(df) < 8: return False
+    close      = float(df.iloc[-1]["close"])
+    prev_close = float(df.iloc[-2]["close"])
+
+    if direction == "BUY":
+        swing_high = float(df["high"].tail(10).iloc[:-2].max())
+        return close > swing_high and prev_close <= swing_high
+
+    if direction == "SELL":
+        swing_low = float(df["low"].tail(10).iloc[:-2].min())
+        return close < swing_low and prev_close >= swing_low
+
+    return False
+
+def near_key_level(df, symbol_key, direction):
+    """
+    Checks if divergence forms near support (BUY) or resistance (SELL).
+    Uses recent 50-bar range — lower 30% = support, upper 30% = resistance.
+    """
+    if len(df) < 50: return True
+    price   = float(df.iloc[-1]["close"])
+    hi_50   = float(df["high"].tail(50).max())
+    lo_50   = float(df["low"].tail(50).min())
+    rng     = hi_50 - lo_50
+    if rng == 0: return True
+    if direction == "BUY":  return price <= lo_50 + rng * 0.35
+    if direction == "SELL": return price >= hi_50 - rng * 0.35
+    return False
+
+def run_engine2(df, symbol_key, direction):
+    """
+    Full ENGINE 2 check.
+    Returns: (passed, score, description)
+    """
+    bull_div, bear_div, strength, desc = detect_rsi_divergence(df, symbol_key)
+
+    if direction == "BUY" and not bull_div:   return False, 0, "No bull divergence"
+    if direction == "SELL" and not bear_div:  return False, 0, "No bear divergence"
+
+    # Structure break required (from PDF)
+    if not divergence_structure_break(df, direction):
+        return False, 0, "No structure break"
+
+    # Near key level preferred but not mandatory
+    at_level = near_key_level(df, symbol_key, direction)
+
+    score = int(strength) + (3 if at_level else 0)
+    full_desc = f"RSI DIV {desc}" + (" | AT KEY LEVEL" if at_level else "")
+
+    return True, score, full_desc
+
+
+# ============================================================
+# ENGINE 3 — PRICE ACTION DETECTOR
+# Detects: Pin Bar, Engulfing, Inside Bar, Rejection, Doji
+# ============================================================
+def detect_pin_bar(df, direction):
+    """
+    Pin bar / Hammer / Shooting star.
+    BUY:  long lower wick, small body at top (hammer)
+    SELL: long upper wick, small body at bottom (shooting star)
+    """
+    if len(df) < 3: return False, 0
+
+    c    = df.iloc[-1]
+    op   = float(c["open"]); cl = float(c["close"])
+    hi   = float(c["high"]); lo = float(c["low"])
+    body = abs(cl - op)
+    rng  = hi - lo
+
+    if rng == 0 or body < rng * 0.05: return False, 0
+
+    upper_wick = hi - max(op, cl)
+    lower_wick = min(op, cl) - lo
+
+    if direction == "BUY":
+        # Hammer: lower wick >= 2x body, upper wick small
+        if lower_wick >= body * PA_PIN_WICK_RATIO and upper_wick < body * 0.5:
+            score = 8 if lower_wick >= body * 3 else 6
+            return True, score
+
+    if direction == "SELL":
+        # Shooting star: upper wick >= 2x body, lower wick small
+        if upper_wick >= body * PA_PIN_WICK_RATIO and lower_wick < body * 0.5:
+            score = 8 if upper_wick >= body * 3 else 6
+            return True, score
+
+    return False, 0
+
+def detect_engulfing(df, direction):
+    """
+    Bullish/Bearish engulfing candle.
+    Current candle body engulfs previous candle body.
+    """
+    if len(df) < 3: return False, 0
+
+    curr = df.iloc[-1]; prev = df.iloc[-2]
+    c_op = float(curr["open"]); c_cl = float(curr["close"])
+    p_op = float(prev["open"]); p_cl = float(prev["close"])
+    c_body = abs(c_cl - c_op); p_body = abs(p_cl - p_op)
+
+    if p_body == 0: return False, 0
+
+    if direction == "BUY":
+        # Bullish engulf: curr green, prev red, curr body > prev body
+        if c_cl > c_op and p_cl < p_op:
+            if c_op <= p_cl and c_cl >= p_op:
+                score = 9 if c_body >= p_body * PA_ENGULF_RATIO * 1.5 else 7
+                return True, score
+
+    if direction == "SELL":
+        # Bearish engulf: curr red, prev green, curr body > prev body
+        if c_cl < c_op and p_cl > p_op:
+            if c_op >= p_cl and c_cl <= p_op:
+                score = 9 if c_body >= p_body * PA_ENGULF_RATIO * 1.5 else 7
+                return True, score
+
+    return False, 0
+
+def detect_inside_bar_break(df, direction):
+    """
+    Inside bar breakout.
+    Previous bar range contained inside the one before.
+    Current bar breaks out of the mother bar.
+    """
+    if len(df) < 4: return False, 0
+
+    mother  = df.iloc[-3]
+    inside  = df.iloc[-2]
+    current = df.iloc[-1]
+
+    m_hi = float(mother["high"]); m_lo = float(mother["low"])
+    i_hi = float(inside["high"]); i_lo = float(inside["low"])
+    c_cl = float(current["close"])
+
+    # Check inside bar condition
+    if not (i_hi <= m_hi and i_lo >= m_lo):
+        return False, 0
+
+    # Breakout of mother bar
+    if direction == "BUY"  and c_cl > m_hi: return True, 7
+    if direction == "SELL" and c_cl < m_lo: return True, 7
+
+    return False, 0
+
+def detect_rejection_candle(df, direction):
+    """
+    Rejection at key level — candle wicks strongly rejected.
+    """
+    if len(df) < 3: return False, 0
+
+    c  = df.iloc[-1]
+    op = float(c["open"]); cl = float(c["close"])
+    hi = float(c["high"]); lo = float(c["low"])
+    body = abs(cl - op); rng = hi - lo
+
+    if rng == 0: return False, 0
+    body_pct = body / rng
+
+    if direction == "BUY"  and body_pct < 0.40 and cl > op: return True, 5
+    if direction == "SELL" and body_pct < 0.40 and cl < op: return True, 5
+
+    return False, 0
+
+def detect_double_top_bottom(df, direction):
+    """
+    Double top (SELL) or Double bottom (BUY).
+    Two similar highs/lows within 0.1% of each other.
+    """
+    if len(df) < 20: return False, 0
+
+    recent = df.tail(20)
+    if direction == "SELL":
+        highs = recent["high"].astype(float).values
+        max1  = highs.max()
+        # Find second high within 0.1%
+        for h in highs[:-3]:
+            if abs(h - max1) / max1 < 0.001 and h != max1:
+                return True, 8
+    if direction == "BUY":
+        lows = recent["low"].astype(float).values
+        min1 = lows.min()
+        for l in lows[:-3]:
+            if abs(l - min1) / min1 < 0.001 and l != min1:
+                return True, 8
+
+    return False, 0
+
+def run_engine3(df, symbol_key, direction):
+    """
+    Full ENGINE 3 — Price Action check.
+    Runs all PA patterns, returns best match.
+    Returns: (passed, score, description)
+    """
+    patterns = []
+
+    pin,    pin_s    = detect_pin_bar(df, direction)
+    engulf, eng_s    = detect_engulfing(df, direction)
+    inside, ins_s    = detect_inside_bar_break(df, direction)
+    reject, rej_s    = detect_rejection_candle(df, direction)
+    dbl,    dbl_s    = detect_double_top_bottom(df, direction)
+
+    if pin:    patterns.append(("PIN BAR",       pin_s))
+    if engulf: patterns.append(("ENGULFING",     eng_s))
+    if inside: patterns.append(("INSIDE BREAK",  ins_s))
+    if reject: patterns.append(("REJECTION",     rej_s))
+    if dbl:    patterns.append(("DOUBLE T/B",    dbl_s))
+
+    if not patterns:
+        return False, 0, "No PA pattern"
+
+    # Take highest scoring pattern
+    best = max(patterns, key=lambda x: x[1])
+    total_score = sum(p[1] for p in patterns)
+
+    if best[1] < PA_MIN_SCORE:
+        return False, 0, "PA score too low"
+
+    desc = " + ".join([p[0] for p in patterns])
+    return True, total_score, f"PA: {desc} (score:{total_score})"
+
+
+# ============================================================
+# ENGINE 4 — ENHANCED LIQUIDITY SWEEP
+# Detects: Equal H/L, Previous Day H/L, Round Numbers
+# Enhanced with volume confirmation and rejection candle
+# ============================================================
+def detect_equal_highs_lows(df, symbol_key, direction):
+    """Equal highs (sell target) or equal lows (buy target)."""
+    if len(df) < 20: return False
+
+    threshold = SWEEP_EQUAL_THRESHOLD
+    recent    = df.tail(20)
+    price     = float(df.iloc[-1]["close"])
+
+    if direction == "SELL":
+        highs = recent["high"].astype(float).values[:-1]
+        # Two or more highs within threshold of each other
+        for i in range(len(highs)-1):
+            for j in range(i+1, len(highs)):
+                if abs(highs[i]-highs[j])/max(highs[i],highs[j]) < threshold:
+                    # Price swept above equal highs and rejected
+                    if float(df.iloc[-1]["high"]) >= max(highs[i],highs[j]) and price < max(highs[i],highs[j]):
+                        return True
+    if direction == "BUY":
+        lows = recent["low"].astype(float).values[:-1]
+        for i in range(len(lows)-1):
+            for j in range(i+1, len(lows)):
+                if abs(lows[i]-lows[j])/max(lows[i],lows[j]) < threshold:
+                    if float(df.iloc[-1]["low"]) <= min(lows[i],lows[j]) and price > min(lows[i],lows[j]):
+                        return True
+    return False
+
+def detect_prev_day_sweep(df, symbol_key, direction):
+    """
+    Previous day high/low sweep + rejection.
+    Price hunts stops beyond PDH/PDL then reverses.
+    """
+    if len(df) < 500: return False  # need enough history for prev day
+
+    # Approximate previous day using last 288 bars (1M bars = ~1 day)
+    prev_day = df.tail(576).head(288)
+    if len(prev_day) < 100: return False
+
+    pdh = float(prev_day["high"].max())
+    pdl = float(prev_day["low"].min())
+
+    last_high  = float(df.iloc[-1]["high"])
+    last_low   = float(df.iloc[-1]["low"])
+    last_close = float(df.iloc[-1]["close"])
+    buf        = pdh * SWEEP_PDH_PDL_BUFFER
+
+    if direction == "SELL":
+        # Swept above PDH and rejected back below
+        return last_high > pdh + buf and last_close < pdh
+    if direction == "BUY":
+        # Swept below PDL and rejected back above
+        return last_low < pdl - buf and last_close > pdl
+
+    return False
+
+def detect_round_number_sweep(df, symbol_key, direction):
+    """
+    Round number sweep — price hunts stops at round numbers.
+    e.g. 4500, 4550 on gold
+    """
+    if len(df) < 5: return False
+
+    price     = float(df.iloc[-1]["close"])
+    last_high = float(df.iloc[-1]["high"])
+    last_low  = float(df.iloc[-1]["low"])
+    rn_step   = SWEEP_ROUND_NUMBERS.get(symbol_key, 50.0)
+
+    # Nearest round number
+    nearest_rn = round(price / rn_step) * rn_step
+
+    if direction == "SELL":
+        # Swept above round number and rejected
+        return last_high >= nearest_rn and price < nearest_rn
+    if direction == "BUY":
+        # Swept below round number and rejected
+        return last_low <= nearest_rn and price > nearest_rn
+
+    return False
+
+def sweep_volume_confirmed(df):
+    """Volume spike confirms the sweep is institutional."""
+    if len(df) < 11: return False
+    vol   = float(df.iloc[-1]["volume"])
+    volma = float(df.iloc[-1]["volma"]) if not pd.isna(df.iloc[-1]["volma"]) else 0
+    return volma > 0 and vol > volma * SWEEP_VOL_MULT
+
+def run_engine4(df, symbol_key, direction):
+    """
+    Full ENGINE 4 — Enhanced Liquidity Sweep.
+    Returns: (passed, score, description)
+    """
+    sweeps = []
+
+    # Basic sweep (already in v4)
+    bull_sw, bear_sw = detect_liquidity_sweep(df, symbol_key)
+    basic_sweep = bull_sw if direction=="BUY" else bear_sw
+    if basic_sweep: sweeps.append(("BASIC SWEEP", 5))
+
+    # Equal highs/lows
+    if detect_equal_highs_lows(df, symbol_key, direction):
+        sweeps.append(("EQUAL H/L HUNT", 7))
+
+    # Previous day H/L
+    if detect_prev_day_sweep(df, symbol_key, direction):
+        sweeps.append(("PDH/PDL SWEEP", 8))
+
+    # Round number
+    if detect_round_number_sweep(df, symbol_key, direction):
+        sweeps.append(("ROUND NUMBER", 6))
+
+    if not sweeps:
+        return False, 0, "No sweep detected"
+
+    vol_conf = sweep_volume_confirmed(df)
+    vol_bonus = 3 if vol_conf else 0
+
+    total_score = sum(s[1] for s in sweeps) + vol_bonus
+    desc = " + ".join([s[0] for s in sweeps])
+    if vol_conf: desc += " + VOL SPIKE"
+
+    return True, total_score, f"SWEEP: {desc}"
+
+
+# ============================================================
+# CONFLUENCE ENGINE — Combines all 4 engines
+# ============================================================
+def run_confluence(df, symbol_key, direction, base_score):
+    """
+    Runs all 4 engines and checks confluence.
+    Returns: (passed, final_score, engines_passed, confluence_text)
+    """
+    engines_passed = []
+    engine_details = []
+
+    # ENGINE 1 — Momentum (base_score from build_score)
+    if base_score >= ABSOLUTE_MIN_SCORE:
+        engines_passed.append("MOMENTUM")
+        engine_details.append(f"ENGINE 1 ✅ MOMENTUM (score:{base_score})")
+
+    # ENGINE 2 — RSI Divergence
+    e2_pass, e2_score, e2_desc = run_engine2(df, symbol_key, direction)
+    if e2_pass:
+        engines_passed.append("RSI DIVERGENCE")
+        engine_details.append(f"ENGINE 2 ✅ RSI DIVERGENCE | {e2_desc}")
+
+    # ENGINE 3 — Price Action
+    e3_pass, e3_score, e3_desc = run_engine3(df, symbol_key, direction)
+    if e3_pass:
+        engines_passed.append("PRICE ACTION")
+        engine_details.append(f"ENGINE 3 ✅ PRICE ACTION | {e3_desc}")
+
+    # ENGINE 4 — Liquidity Sweep
+    e4_pass, e4_score, e4_desc = run_engine4(df, symbol_key, direction)
+    if e4_pass:
+        engines_passed.append("LIQ SWEEP")
+        engine_details.append(f"ENGINE 4 ✅ LIQ SWEEP | {e4_desc}")
+
+    n_engines = len(engines_passed)
+
+    # Check confluence minimum
+    if n_engines < MIN_ENGINES_CONFLUENCE:
+        log.info(f"CONFLUENCE FAIL {symbol_key}: only {n_engines}/{MIN_ENGINES_CONFLUENCE} engines")
+        return False, 0, engines_passed, ""
+
+    # Bonus score for more engines agreeing
+    bonus = CONFLUENCE_BONUS.get(n_engines, 0)
+
+    # Additional scores from engines 2,3,4
+    extra = (e2_score if e2_pass else 0) +             (e3_score if e3_pass else 0) +             (e4_score if e4_pass else 0)
+
+    final_score = base_score + extra + bonus
+
+    # Quality label
+    if n_engines == 4:   quality = "GOD-TIER CONFLUENCE 🔥🔥🔥"
+    elif n_engines == 3: quality = "ELITE CONFLUENCE 🔥🔥"
+    else:                quality = "STANDARD CONFLUENCE 🔥"
+
+    confluence_text = "\n".join(engine_details)
+    confluence_text += f"\n\n🔥 *Confluence:* {n_engines}/4 | {quality}"
+
+    log.info(f"CONFLUENCE {symbol_key} {direction}: {n_engines}/4 engines | score:{final_score}")
+
+    return True, final_score, engines_passed, confluence_text
 
 # ============================================================
 # INDICATORS
@@ -1202,14 +1709,24 @@ def master_signal(symbol_key,df,session,trend,regime,
     if FALSE_BREAK_FILTER and not false_breakout_filter(df,direction):
         log.info(f"REJECTED {symbol_key} false breakout"); return None,None,None
 
-    return direction,best,wizard_score
+    # ============================================================
+    # CONFLUENCE CHECK — require 2+ engines to agree
+    # ============================================================
+    conf_pass, conf_score, engines_passed, conf_text = run_confluence(
+        df, symbol_key, direction, best
+    )
+    if not conf_pass:
+        return None, None, None, None, None
+
+    return direction, conf_score, wizard_score, engines_passed, conf_text
 
 # ============================================================
 # EXECUTE SCALP TRADE — with FIX 14 anticipation entry
 # ============================================================
 def execute_trade(symbol_key,df,direction,best,wizard_score,
                   sniper_score,macro_trend,session,trend,
-                  regime,buy,sell,source,asia_mode,daily_bias):
+                  regime,buy,sell,source,asia_mode,daily_bias,
+                  engines_passed=None,conf_text=""):
 
     current_price = float(df.iloc[-1]["close"])
     atr           = float(df.iloc[-1]["atr"])
@@ -1292,7 +1809,10 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
         f"✅ *Conditions:*\n{cond_text}\n\n"
         f"🕐 *Entry Mode:* ⚡ ANTICIPATION — ENTER WHEN PRICE REACHES {entry:,.{dec}f}\n"
         f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
-        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v2*"
+        f"\n🔥 *Engine Confluence:* {len(engines_passed) if engines_passed else 1}/4\n"
+        f"{conf_text}\n\n"
+        f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
+        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v5*"
     )
     send_telegram(msg)
     log.info(f"SCALP SIGNAL {symbol_key} {direction} | CurrentPrice:{current_price} Entry:{entry} SL:{sl} TP:{tp} Lot:{lot}")
@@ -1490,7 +2010,7 @@ def process_symbol(symbol_key):
 
     if correlated_signal_block(symbol_key): return
 
-    direction,best,wizard_score=master_signal(
+    direction,best,wizard_score,engines_passed,conf_text=master_signal(
         symbol_key,df,session,trend,regime,
         buy,sell,buy_score,sell_score,sbuy,ssell
     )
@@ -1510,7 +2030,8 @@ def process_symbol(symbol_key):
 
     execute_trade(symbol_key,df,direction,best,wizard_score,
                   sniper_score,macro_trend,session,trend,
-                  regime,buy,sell,source,asia_mode,daily_bias)
+                  regime,buy,sell,source,asia_mode,daily_bias,
+                  engines_passed,conf_text)
 
 # ============================================================
 # PROCESS BREAKOUT
@@ -1573,7 +2094,12 @@ def main():
         f"✅ FIX 17: Trailing SL Guide\n"
         f"✅ FIX 18: News Time Block\n"
         f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n✅ FIX 21: ADX Spike Block (>60 blocked)\n✅ FIX 22: RSI Impossible Block (<10 or >90)\n✅ FIX 23: ATR Sanity Check Per Market\n✅ FIX 24: Candle Sanity Check\n✅ FIX 25: Volume Sanity Check\n✅ FIX 26: Price Range Sanity Check\n\n"
-        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v4"
+        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v5\n\n"
+        f"🔥 4-ENGINE CONFLUENCE SYSTEM:\n"
+        f"ENGINE 1: Momentum Scalp\n"
+        f"ENGINE 2: RSI Divergence\n"
+        f"ENGINE 3: Price Action\n"
+        f"ENGINE 4: Enhanced Liquidity Sweep"
     )
 
     loop_count=0
