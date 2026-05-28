@@ -46,7 +46,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v5.3"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v5.5"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,7 +66,13 @@ log_lock     = Lock()
 # MARKETS
 # ============================================================
 PRIORITY_MARKETS = [
-    "XAU/USD", "NAS100", "SPX500", "EUR/USD", "GBP/JPY",
+    # Global Commodities & Indices
+    "XAU/USD", "XAG/USD", "NAS100", "SPX500", "US30",
+    # Forex
+    "EUR/USD", "GBP/JPY", "USD/JPY",
+    # Crypto
+    "BTC/USD", "ETH/USD",
+    # India
     "NIFTY50", "BANKNIFTY", "SENSEX", "RELIANCE", "TCS",
 ]
 
@@ -83,9 +89,25 @@ MARKETS = {
     "SENSEX":    {"mt5":"SENSEX",      "yf":"^BSESN",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":60.0, "scalp_min_sl":25.0, "tier":"INDIA BSE ELITE",         "bias":"BULL","rr":1.6,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"india"},
     "RELIANCE":  {"mt5":"RELIANCE",    "yf":"RELIANCE.NS", "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":8.0,  "scalp_min_sl":1.5,  "tier":"INDIA LARGE CAP ELITE",   "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
     "TCS":       {"mt5":"TCS",         "yf":"TCS.NS",      "price_lo":0,"price_hi":float("inf"),"sessions":[3,10],"decimals":2,"min_sl":12.0, "scalp_min_sl":3.0,  "tier":"INDIA IT ELITE",          "bias":"BULL","rr":1.7,"sweep_bonus":2,"wick_ratio":1.6,"market_type":"india"},
+
+    # ---- NEW TIER 1 MARKETS ----
+    # Silver — natural gold pair, high volatility
+    "XAG/USD":   {"mt5":"XAGUSD",      "yf":"SI=F",        "price_lo":0,"price_hi":float("inf"),"sessions":[0,20],"decimals":3,"min_sl":0.15, "scalp_min_sl":0.05, "tier":"SILVER ELITE",            "bias":"BULL","rr":2.0,"sweep_bonus":2,"wick_ratio":1.7,"market_type":"global"},
+
+    # US30 — Dow Jones, strong trends
+    "US30":      {"mt5":"US30",        "yf":"^DJI",        "price_lo":0,"price_hi":float("inf"),"sessions":[13,21],"decimals":1,"min_sl":30.0, "scalp_min_sl":10.0, "tier":"DOW JONES ELITE",         "bias":"BULL","rr":2.0,"sweep_bonus":2,"wick_ratio":1.5,"market_type":"global"},
+
+    # USDJPY — most liquid forex, clear trends
+    "USD/JPY":   {"mt5":"USDJPY",      "yf":"USDJPY=X",    "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":3,"min_sl":0.15, "scalp_min_sl":0.05, "tier":"FOREX YEN ELITE",         "bias":"BULL","rr":2.0,"sweep_bonus":2,"wick_ratio":1.4,"market_type":"global"},
+
+    # Bitcoin — 24/7, high volatility
+    "BTC/USD":   {"mt5":"BTCUSD",      "yf":"BTC-USD",     "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":1,"min_sl":200.0,"scalp_min_sl":80.0, "tier":"BITCOIN ELITE",           "bias":"BULL","rr":2.2,"sweep_bonus":3,"wick_ratio":1.8,"market_type":"crypto"},
+
+    # Ethereum — confirmed by BTC
+    "ETH/USD":   {"mt5":"ETHUSD",      "yf":"ETH-USD",     "price_lo":0,"price_hi":float("inf"),"sessions":[0,24],"decimals":2,"min_sl":20.0, "scalp_min_sl":8.0,  "tier":"ETHEREUM ELITE",          "bias":"BULL","rr":2.2,"sweep_bonus":3,"wick_ratio":1.8,"market_type":"crypto"},
 }
 
-SYMBOLS = list(MARKETS.keys())
+SYMBOLS = list(MARKETS.keys())  # auto-includes all 15 markets
 
 # ============================================================
 # CORE SETTINGS
@@ -141,8 +163,13 @@ MAX_ANTICIPATION_PTS = {
     "NIFTY50":   8.0,    # max 8pts ahead
     "BANKNIFTY": 15.0,   # max 15pts ahead
     "SENSEX":    25.0,   # max 25pts ahead
-    "RELIANCE":  2.0,    # max 2pts ahead
-    "TCS":       3.0,    # max 3pts ahead
+    "RELIANCE":  2.0,
+    "TCS":       3.0,
+    "XAG/USD":   0.08,   # max 0.08 ahead on silver
+    "US30":      8.0,    # max 8pts ahead on Dow
+    "USD/JPY":   0.05,   # max 5 pips ahead
+    "BTC/USD":   30.0,   # max $30 ahead on BTC
+    "ETH/USD":   3.0,    # max $3 ahead on ETH
 }
 # ============================================================
 # FIX 21-26 — DATA QUALITY VALIDATION CONFIG
@@ -169,6 +196,12 @@ ATR_SANITY = {
     "SENSEX":    {"min": 20.0,   "max": 1000.0},
     "RELIANCE":  {"min": 0.5,    "max": 80.0  },
     "TCS":       {"min": 1.0,    "max": 120.0 },
+    # New Tier 1
+    "XAG/USD":   {"min": 0.02,   "max": 3.0   },
+    "US30":      {"min": 5.0,    "max": 500.0 },
+    "USD/JPY":   {"min": 0.02,   "max": 3.0   },
+    "BTC/USD":   {"min": 50.0,   "max": 5000.0},
+    "ETH/USD":   {"min": 5.0,    "max": 500.0 },
 }
 
 # FIX 26 — Realistic price ranges per market
@@ -183,6 +216,12 @@ PRICE_SANITY = {
     "SENSEX":    {"min": 30000,  "max": 120000 },
     "RELIANCE":  {"min": 500,    "max": 5000   },
     "TCS":       {"min": 1000,   "max": 8000   },
+    # New Tier 1
+    "XAG/USD":   {"min": 10.0,   "max": 200.0  },
+    "US30":      {"min": 20000,  "max": 60000  },
+    "USD/JPY":   {"min": 100.0,  "max": 200.0  },
+    "BTC/USD":   {"min": 5000,   "max": 200000 },
+    "ETH/USD":   {"min": 500,    "max": 20000  },
 }
 
 # ============================================================
@@ -202,6 +241,8 @@ SWEEP_ROUND_NUMBERS = {
     "EUR/USD":0.0050,"GBP/JPY":0.500,
     "NIFTY50":100.0,"BANKNIFTY":200.0,"SENSEX":500.0,
     "RELIANCE":10.0,"TCS":20.0,
+    "XAG/USD":0.50,"US30":100.0,"USD/JPY":0.500,
+    "BTC/USD":1000.0,"ETH/USD":100.0,
 }
 SWEEP_VOL_MULT          = 1.5
 MIN_ENGINES_CONFLUENCE  = 2
@@ -323,7 +364,6 @@ CORRELATION_MAP = {
         "min_confirms": 2,
     },
     # ---- TCS ----
-    # IT stock — moves with NAS100, Rupee
     "TCS": {
         "confirms": [
             {"ticker": "^NSEI",   "name": "NIFTY50",      "type": "POSITIVE", "weight": 4},
@@ -332,6 +372,71 @@ CORRELATION_MAP = {
         ],
         "lead_asset": "^NSEI",
         "block_on_fail": False,
+        "min_confirms": 2,
+    },
+
+    # ---- XAG/USD (Silver) ----
+    # Moves with gold, opposite DXY
+    "XAG/USD": {
+        "confirms": [
+            {"ticker": "GC=F",    "name": "Gold",         "type": "POSITIVE", "weight": 5},
+            {"ticker": "UUP",     "name": "DXY",          "type": "NEGATIVE", "weight": 4},
+            {"ticker": "CL=F",    "name": "Crude Oil",    "type": "POSITIVE", "weight": 2},
+        ],
+        "lead_asset": "GC=F",
+        "block_on_fail": True,
+        "min_confirms": 2,
+    },
+
+    # ---- US30 (Dow Jones) ----
+    # Moves with NAS100 and SPX500
+    "US30": {
+        "confirms": [
+            {"ticker": "^GSPC",   "name": "SPX500",       "type": "POSITIVE", "weight": 5},
+            {"ticker": "^NDX",    "name": "NAS100",       "type": "POSITIVE", "weight": 4},
+            {"ticker": "^VIX",    "name": "VIX Fear",     "type": "NEGATIVE", "weight": 3},
+        ],
+        "lead_asset": "^GSPC",
+        "block_on_fail": True,
+        "min_confirms": 2,
+    },
+
+    # ---- USD/JPY ----
+    # Risk-on = USDJPY rises, risk-off = falls
+    "USD/JPY": {
+        "confirms": [
+            {"ticker": "^N225",   "name": "Nikkei",       "type": "POSITIVE", "weight": 4},
+            {"ticker": "^GSPC",   "name": "SPX500",       "type": "POSITIVE", "weight": 3},
+            {"ticker": "GC=F",    "name": "Gold",         "type": "NEGATIVE", "weight": 3},
+        ],
+        "lead_asset": "^N225",
+        "block_on_fail": False,
+        "min_confirms": 2,
+    },
+
+    # ---- BTC/USD ----
+    # Crypto — moves with ETH, moderate NAS100 correlation
+    "BTC/USD": {
+        "confirms": [
+            {"ticker": "ETH-USD", "name": "Ethereum",     "type": "POSITIVE", "weight": 5},
+            {"ticker": "^NDX",    "name": "NAS100",       "type": "POSITIVE", "weight": 3},
+            {"ticker": "^VIX",    "name": "VIX Fear",     "type": "NEGATIVE", "weight": 2},
+        ],
+        "lead_asset": "ETH-USD",
+        "block_on_fail": True,
+        "min_confirms": 2,
+    },
+
+    # ---- ETH/USD ----
+    # Almost perfectly correlated with BTC
+    "ETH/USD": {
+        "confirms": [
+            {"ticker": "BTC-USD", "name": "Bitcoin",      "type": "POSITIVE", "weight": 6},
+            {"ticker": "^NDX",    "name": "NAS100",       "type": "POSITIVE", "weight": 2},
+            {"ticker": "^VIX",    "name": "VIX Fear",     "type": "NEGATIVE", "weight": 2},
+        ],
+        "lead_asset": "BTC-USD",
+        "block_on_fail": True,
         "min_confirms": 2,
     },
 }
@@ -373,6 +478,12 @@ RR_PROFILE = {
     "SENSEX":    {"SCALP": 2.0, "BREAKOUT": 2.5},
     "RELIANCE":  {"SCALP": 2.0, "BREAKOUT": 2.3},
     "TCS":       {"SCALP": 2.0, "BREAKOUT": 2.3},
+    # New Tier 1 — higher RR due to higher volatility
+    "XAG/USD":   {"SCALP": 2.2, "BREAKOUT": 3.0},
+    "US30":      {"SCALP": 2.0, "BREAKOUT": 2.8},
+    "USD/JPY":   {"SCALP": 2.0, "BREAKOUT": 2.5},
+    "BTC/USD":   {"SCALP": 2.5, "BREAKOUT": 3.5},
+    "ETH/USD":   {"SCALP": 2.5, "BREAKOUT": 3.5},
 }
 
 SESSION_THRESHOLDS = {
@@ -397,26 +508,37 @@ BREAKOUT_SESSION_THRESHOLDS = {
 EXECUTION_BUFFER = {
     "XAU/USD":0.15,"NAS100":1.5,"SPX500":1.0,"EUR/USD":0.00005,"GBP/JPY":0.010,
     "NIFTY50":1.0,"BANKNIFTY":2.0,"SENSEX":3.0,"RELIANCE":0.50,"TCS":0.50,
+    "XAG/USD":0.02,"US30":2.0,"USD/JPY":0.010,"BTC/USD":5.0,"ETH/USD":0.50,
 }
 
 ATR_MARKET_MULTIPLIER = {
     "XAU/USD":0.90,"NAS100":0.88,"SPX500":0.85,"EUR/USD":0.80,"GBP/JPY":0.95,
     "NIFTY50":0.90,"BANKNIFTY":0.92,"SENSEX":0.88,"RELIANCE":0.85,"TCS":0.85,
+    "XAG/USD":0.92,"US30":0.88,"USD/JPY":0.85,"BTC/USD":0.95,"ETH/USD":0.95,
 }
 
 DOLLAR_PER_POINT = {
     "XAU/USD":100,"NAS100":10,"SPX500":10,"EUR/USD":100000,"GBP/JPY":1000,
     "NIFTY50":50,"BANKNIFTY":20,"SENSEX":10,"RELIANCE":1,"TCS":1,
+    "XAG/USD":5000,"US30":1,"USD/JPY":1000,"BTC/USD":1,"ETH/USD":1,
 }
 
 MAX_SPREAD = {
     "XAU/USD":1.35,"NAS100":5.0,"SPX500":3.5,"EUR/USD":0.00035,"GBP/JPY":0.060,
     "NIFTY50":5.0,"BANKNIFTY":10.0,"SENSEX":15.0,"RELIANCE":1.0,"TCS":1.5,
+    "XAG/USD":0.050,"US30":8.0,"USD/JPY":0.040,"BTC/USD":50.0,"ETH/USD":5.0,
 }
 
 MAX_SIGNALS_PER_DAY = {
+    # Original markets
     "XAU/USD":4,"NAS100":3,"SPX500":3,"EUR/USD":4,"GBP/JPY":3,
     "NIFTY50":4,"BANKNIFTY":4,"SENSEX":3,"RELIANCE":3,"TCS":3,
+    # New Tier 1 markets
+    "XAG/USD":3,   # Silver — 3/day
+    "US30":3,      # Dow — 3/day
+    "USD/JPY":4,   # USDJPY — 4/day (liquid)
+    "BTC/USD":4,   # Bitcoin — 4/day (24/7)
+    "ETH/USD":3,   # Ethereum — 3/day
 }
 
 MARKET_STRUCTURE = {
@@ -435,13 +557,16 @@ MARKET_STRUCTURE = {
 MARKET_MIN_STRUCTURE_SCORE = {
     "XAU/USD":3,"NAS100":4,"SPX500":3,"EUR/USD":3,"GBP/JPY":3,
     "NIFTY50":4,"BANKNIFTY":5,"SENSEX":4,"RELIANCE":3,"TCS":3,
+    "XAG/USD":3,"US30":4,"USD/JPY":3,"BTC/USD":3,"ETH/USD":3,
 }
 
 CORRELATED_GROUPS = [
-    ["NAS100","SPX500"],
-    ["EUR/USD","GBP/JPY"],
-    ["NIFTY50","BANKNIFTY","SENSEX"],
-    ["RELIANCE","TCS"],
+    ["NAS100","SPX500","US30"],       # US indices
+    ["EUR/USD","GBP/JPY","USD/JPY"],  # Major forex
+    ["NIFTY50","BANKNIFTY","SENSEX"], # India indices
+    ["RELIANCE","TCS"],               # India stocks
+    ["XAU/USD","XAG/USD"],            # Precious metals
+    ["BTC/USD","ETH/USD"],            # Crypto
 ]
 
 DUPLICATE_WINDOWS = {
@@ -449,6 +574,8 @@ DUPLICATE_WINDOWS = {
     "EUR/USD":1800,"GBP/JPY":1800,
     "NIFTY50":900,"BANKNIFTY":900,"SENSEX":900,
     "RELIANCE":900,"TCS":900,
+    "XAG/USD":1800,"US30":1800,"USD/JPY":1800,
+    "BTC/USD":1800,"ETH/USD":1800,
 }
 
 # India Close re-allowed but with higher score gate (25+)
@@ -471,6 +598,18 @@ _last_signal_direction = {}
 _last_signal_time      = {}
 _signal_counter        = {s: {"session":None,"count":0} for s in SYMBOLS}
 _daily_signal_count    = {s: 0 for s in SYMBOLS}
+_daily_total_signals   = 0        # total signals fired today across ALL markets
+_daily_tp_count        = 0        # tracked wins today
+_daily_sl_count        = 0        # tracked losses today
+_session_signal_count  = {        # signals per session today
+    "Asian Precision": 0,
+    "London":          0,
+    "NY Killzone":     0,
+    "NY+London":       0,
+    "India Open":      0,
+    "India Midday":    0,
+    "India Close":     0,
+}
 
 for _file in ["signals_log.csv","signals_backup.csv"]:
     if not os.path.exists(_file):
@@ -492,6 +631,48 @@ def reset_daily():
         _daily_bias_cache   = {s:{"bias":"NEUTRAL","ts":0} for s in SYMBOLS}
         _signal_counter     = {s:{"session":None,"count":0} for s in SYMBOLS}
         log.info("Daily reset complete")
+
+# ============================================================
+# DAILY SIGNAL COUNTER & TRACKER
+# Shows signal X/Y today in every Telegram message
+# ============================================================
+def increment_signal_counter(session):
+    """Increments daily and session counters when signal fires."""
+    global _daily_total_signals, _session_signal_count
+    _daily_total_signals += 1
+    if session in _session_signal_count:
+        _session_signal_count[session] += 1
+    return _daily_total_signals
+
+def get_daily_summary_line():
+    """
+    Returns a summary line for Telegram:
+    📊 Signal 3/10 today | Asian:1 London:2
+    """
+    total    = _daily_total_signals
+    max_est  = 10  # estimated max signals per day
+    sessions = []
+    for sess, count in _session_signal_count.items():
+        if count > 0:
+            short = {"Asian Precision":"AS","London":"LO",
+                     "NY Killzone":"NK","NY+London":"NL",
+                     "India Open":"IO","India Midday":"IM",
+                     "India Close":"IC"}.get(sess, sess[:2])
+            sessions.append(f"{short}:{count}")
+    sess_str = " | ".join(sessions) if sessions else "First signal today"
+    return f"📊 *Signal #{total} today* | {sess_str}"
+
+def get_win_rate_line():
+    """Returns today's running win rate."""
+    total = _daily_tp_count + _daily_sl_count
+    if total == 0:
+        return "🎯 *Today's WR:* No closed trades yet"
+    wr = _daily_tp_count / total * 100
+    pnl = _daily_tp_count * 90 - _daily_sl_count * 50
+    return (f"🎯 *Today's WR:* {wr:.0f}% "
+            f"({_daily_tp_count}✅/{_daily_sl_count}❌) | "
+            f"P&L: ${pnl:+.0f}")
+
 
 def update_trade_result(pnl):
     global daily_pnl,consecutive_losses
@@ -596,6 +777,16 @@ def in_session(symbol_key):
         if 330 <= hm < 450: return True,"India Midday"
         if 450 <= hm < 600: return True,"India Close"  # re-allowed with score gate 25+
         return False,"Closed"
+    # Crypto = 24/7, map to nearest session
+    if mtype == "crypto":
+        if 1  <= h < 6:  return True,"Asian Precision"
+        if 8  <= h < 11: return True,"London"
+        if 13 <= h < 15: return True,"NY Killzone"
+        if 14 <= h < 16: return True,"NY+London"
+        if 6  <= h < 8:  return True,"London"    # pre-London
+        if 16 <= h < 20: return True,"NY Killzone" # NY session
+        return True,"Asian Precision"  # off-hours = asian
+
     if 1  <= h < 6:  return True,"Asian Precision"
     if 8  <= h < 11: return True,"London"
     if 13 <= h < 15: return True,"NY Killzone"
@@ -2151,6 +2342,8 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
     tp_50pct = round(entry+(tp-entry)*0.50,dec) if direction=="BUY" else round(entry-(entry-tp)*0.50,dec)
     tp_75pct = round(entry+(tp-entry)*0.75,dec) if direction=="BUY" else round(entry-(entry-tp)*0.75,dec)
 
+    # Increment daily signal counter
+    signal_num_today = increment_signal_counter(session)
     log_signal(symbol_key,direction,best,rr,entry,sl,tp,session,regime,"1M / 5M","SCALP")
 
     checks=buy if direction=="BUY" else sell
@@ -2167,6 +2360,8 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
         f"⚡ *{SYSTEM_VERSION}* | SCALP EXECUTION\n"
         f"*{MARKETS[symbol_key]['mt5']}* | ⭐⭐⭐⭐⭐ {MARKETS[symbol_key]['tier']}\n"
         f"🔱 *PRIORITY MARKET*\n{market_flag}\n"
+        f"{get_daily_summary_line()}\n"
+        f"{get_win_rate_line()}\n\n"
         f"🔥 *Action:* {direction} {ae}\n"
         f"🎯 *Signal #:* {signal_num}\n"
         f"📍 *Entry Type:* {entry_type}\n"
@@ -2202,7 +2397,7 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
         f"\n🔥 *Engine Confluence:* {len(engines_passed) if engines_passed else 1}/4\n"
         f"{conf_text}\n\n"
         f"🛡 *ELITE SCALP FILTER ACTIVE*\n"
-        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v5.3*"
+        f"⚡ *ULTIMATE HYBRID SUPREME — 2026 SCALPER EDITION v5.5*"
     )
     send_telegram(msg)
     log.info(f"SCALP SIGNAL {symbol_key} {direction} | CurrentPrice:{current_price} Entry:{entry} SL:{sl} TP:{tp} Lot:{lot}")
@@ -2273,10 +2468,13 @@ def execute_breakout(symbol_key,df,direction,score,session,source,daily_bias):
     mtype=MARKETS[symbol_key]["market_type"]
     market_flag="🇮🇳 *INDIA INTRADAY*\n" if mtype=="india" else "🌍 *GLOBAL MARKET*\n"
     log_signal(symbol_key,direction,score,rr,price,sl,tp,session,"BREAKOUT","15M / 30M","BREAKOUT")
+    signal_num_today = increment_signal_counter(session)
     msg=(
         f"💥 *{SYSTEM_VERSION}* | BREAKOUT EXECUTION\n"
         f"*{MARKETS[symbol_key]['mt5']}* | ⭐⭐⭐⭐⭐ {MARKETS[symbol_key]['tier']}\n"
         f"🔱 *PRIORITY MARKET*\n{market_flag}\n"
+        f"{get_daily_summary_line()}\n"
+        f"{get_win_rate_line()}\n\n"
         f"🔥 *Action:* {direction} {ae}\n"
         f"📍 *Entry Type:* {'BREAKOUT 🚀' if direction=='BUY' else 'BREAKDOWN 💥'}\n"
         f"🚀 *Signal Type:* BREAKOUT / LIQUIDITY SWEEP\n"
@@ -2463,8 +2661,11 @@ def main():
     log.info(f"{SYSTEM_VERSION} STARTED")
     send_telegram(
         f"⚡ *{SYSTEM_VERSION} LIVE*\n\n"
-        f"📊 *Global:* XAU/USD | NAS100 | SPX500 | EUR/USD | GBP/JPY\n"
+        f"📊 *Global:* XAU/USD | XAG/USD | NAS100 | SPX500 | US30\n"
+        f"💱 *Forex:* EUR/USD | GBP/JPY | USD/JPY\n"
+        f"🪙 *Crypto:* BTC/USD | ETH/USD\n"
         f"🇮🇳 *India:* NIFTY50 | BANKNIFTY | SENSEX | RELIANCE | TCS\n\n"
+        f"📊 *Total:* 15 Markets Active\n\n"
         f"✅ FIX 1:  Signal #2/#3 Blocked\n"
         f"✅ FIX 2:  Fixed $50 Risk Lot Size\n"
         f"✅ FIX 3:  Min SL Enforced\n"
@@ -2484,7 +2685,7 @@ def main():
         f"✅ FIX 17: Trailing SL Guide\n"
         f"✅ FIX 18: News Time Block\n"
         f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n✅ FIX 21: ADX Spike Block (>60 blocked)\n✅ FIX 22: RSI Impossible Block (<10 or >90)\n✅ FIX 23: ATR Sanity Check Per Market\n✅ FIX 24: Candle Sanity Check\n✅ FIX 25: Volume Sanity Check\n✅ FIX 26: Price Range Sanity Check\n\n"
-        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v5.3\n\n"
+        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v5.5\n\n"
         f"⚙️ 5-ENGINE SYSTEM:\n"
         f"1️⃣ Momentum | 2️⃣ RSI Divergence\n"
         f"3️⃣ Price Action | 4️⃣ Liquidity Sweep\n"
