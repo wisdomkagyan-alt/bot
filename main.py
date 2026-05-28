@@ -24,6 +24,7 @@
 # FIX 17 — Trailing SL: move to breakeven at 50% TP, trail at 75%
 # FIX 18 — News time block: 30min around major releases
 # FIX 19 — Same symbol min 30min gap enforced
+# FIX 20 — Anticipation distance capped per market (max 5pts gold)
 # ============================================================
 
 import gc
@@ -39,7 +40,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v2"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v3"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -114,6 +115,21 @@ ABSOLUTE_MIN_SCORE = 20
 
 # FIX 14 — anticipation entry distance (ATR multiplier)
 ANTICIPATION_ATR_MULT = 0.30
+
+# FIX 20 — max anticipation distance cap per market (in price units)
+# Prevents entry being set too far from current price on volatile days
+MAX_ANTICIPATION_PTS = {
+    "XAU/USD":   5.0,    # max 5pts ahead on gold
+    "NAS100":    8.0,    # max 8pts ahead
+    "SPX500":    4.0,    # max 4pts ahead
+    "EUR/USD":   0.0005, # max 5 pips ahead
+    "GBP/JPY":   0.050,  # max 5 pips ahead
+    "NIFTY50":   8.0,    # max 8pts ahead
+    "BANKNIFTY": 15.0,   # max 15pts ahead
+    "SENSEX":    25.0,   # max 25pts ahead
+    "RELIANCE":  2.0,    # max 2pts ahead
+    "TCS":       3.0,    # max 3pts ahead
+}
 
 # FIX 15 — max entry drift %
 MAX_ENTRY_DRIFT_PCT = {
@@ -844,18 +860,25 @@ def detect_market_regime(df): return "SCALP"
 # ============================================================
 def calc_anticipation_entry(current_price, atr, direction, symbol_key):
     """
-    SELL: entry set slightly ABOVE current price
-          Price needs to rise slightly to fill — arrives in ~2 min
-    BUY:  entry set slightly BELOW current price
-          Price needs to fall slightly to fill — arrives in ~2 min
+    SELL: entry set slightly ABOVE current price (~2 min before price arrives)
+    BUY:  entry set slightly BELOW current price (~2 min before price arrives)
+    FIX 20: distance capped per market so entry is never too far from price
     """
-    anticipation = atr * ANTICIPATION_ATR_MULT
-    dec          = MARKETS[symbol_key]["decimals"]
+    raw_anticipation = atr * ANTICIPATION_ATR_MULT
+    max_anticipation = MAX_ANTICIPATION_PTS.get(symbol_key, 5.0)
+    anticipation     = min(raw_anticipation, max_anticipation)  # FIX 20 cap
+    dec              = MARKETS[symbol_key]["decimals"]
 
     if direction == "SELL":
         entry = current_price + anticipation
     else:
         entry = current_price - anticipation
+
+    log.info(f"Anticipation {symbol_key} {direction}: "
+             f"current={current_price:.{dec}f} "
+             f"raw={raw_anticipation:.{dec}f} "
+             f"capped={anticipation:.{dec}f} "
+             f"entry={round(entry,dec):.{dec}f}")
 
     return round(entry, dec)
 
@@ -1369,8 +1392,8 @@ def main():
         f"✅ FIX 16: Data Freshness Check\n"
         f"✅ FIX 17: Trailing SL Guide\n"
         f"✅ FIX 18: News Time Block\n"
-        f"✅ FIX 19: 30min Same Symbol Gap\n\n"
-        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v2"
+        f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n\n"
+        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v3"
     )
 
     loop_count=0
