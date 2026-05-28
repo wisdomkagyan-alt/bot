@@ -25,6 +25,12 @@
 # FIX 18 — News time block: 30min around major releases
 # FIX 19 — Same symbol min 30min gap enforced
 # FIX 20 — Anticipation distance capped per market (max 5pts gold)
+# FIX 21 — ADX unrealistic spike block (ADX > 60 = data error)
+# FIX 22 — RSI impossible value block (RSI < 10 or RSI > 90 = data error)
+# FIX 23 — ATR sanity check per market (zero or extreme = data error)
+# FIX 24 — Candle sanity check (high >= low, close within range)
+# FIX 25 — Volume sanity check (volume must be > 0)
+# FIX 26 — Price sanity check per market (realistic price range)
 # ============================================================
 
 import gc
@@ -40,7 +46,7 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v3"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-SCALPER-v4"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +136,47 @@ MAX_ANTICIPATION_PTS = {
     "RELIANCE":  2.0,    # max 2pts ahead
     "TCS":       3.0,    # max 3pts ahead
 }
+# ============================================================
+# FIX 21-26 — DATA QUALITY VALIDATION CONFIG
+# Realistic indicator ranges per market
+# Anything outside these = data error → signal blocked
+# ============================================================
+
+# FIX 21 — Max realistic ADX per market
+ADX_MAX_REALISTIC = 60.0  # global cap — anything above = data spike
+
+# FIX 22 — RSI impossible value bounds (tighter than FIX 4)
+RSI_DATA_MIN = 10.0   # below this = data error (FIX 4 already blocks <28 for signals)
+RSI_DATA_MAX = 90.0   # above this = data error
+
+# FIX 23 — ATR sanity bounds per market
+ATR_SANITY = {
+    "XAU/USD":   {"min": 0.5,    "max": 80.0  },
+    "NAS100":    {"min": 2.0,    "max": 300.0 },
+    "SPX500":    {"min": 0.5,    "max": 120.0 },
+    "EUR/USD":   {"min": 0.0001, "max": 0.008 },
+    "GBP/JPY":   {"min": 0.02,   "max": 2.0   },
+    "NIFTY50":   {"min": 5.0,    "max": 400.0 },
+    "BANKNIFTY": {"min": 10.0,   "max": 800.0 },
+    "SENSEX":    {"min": 20.0,   "max": 1000.0},
+    "RELIANCE":  {"min": 0.5,    "max": 80.0  },
+    "TCS":       {"min": 1.0,    "max": 120.0 },
+}
+
+# FIX 26 — Realistic price ranges per market
+PRICE_SANITY = {
+    "XAU/USD":   {"min": 1000,   "max": 10000  },
+    "NAS100":    {"min": 5000,   "max": 50000  },
+    "SPX500":    {"min": 1000,   "max": 15000  },
+    "EUR/USD":   {"min": 0.80,   "max": 1.60   },
+    "GBP/JPY":   {"min": 100.0,  "max": 300.0  },
+    "NIFTY50":   {"min": 10000,  "max": 40000  },
+    "BANKNIFTY": {"min": 20000,  "max": 80000  },
+    "SENSEX":    {"min": 30000,  "max": 120000 },
+    "RELIANCE":  {"min": 500,    "max": 5000   },
+    "TCS":       {"min": 1000,   "max": 8000   },
+}
+
 
 # FIX 15 — max entry drift %
 MAX_ENTRY_DRIFT_PCT = {
@@ -469,6 +516,122 @@ def entry_is_reachable(signal_price, current_price, symbol_key, direction):
     if direction == "BUY" and signal_price > current_price * (1 + max_drift/100):
         log.info(f"REJECTED — BUY entry {signal_price} already above market {current_price}")
         return False
+    return True
+
+
+# ============================================================
+# FIX 21-26 — COMPREHENSIVE DATA QUALITY VALIDATOR
+# Checks ALL indicators and price for each market
+# Returns True if data is clean, False if data is corrupt/stale
+# ============================================================
+def validate_data_quality(df, symbol_key):
+    """
+    Runs all data quality checks for a symbol.
+    Blocks signal if ANY check fails.
+    FIX 21: ADX cap
+    FIX 22: RSI impossible values
+    FIX 23: ATR sanity
+    FIX 24: Candle sanity
+    FIX 25: Volume sanity
+    FIX 26: Price sanity
+    """
+    if df is None or len(df) < 5:
+        log.info(f"DQ FAIL {symbol_key}: insufficient data")
+        return False
+
+    last = df.iloc[-1]
+
+    try:
+        price  = float(last["close"])
+        high   = float(last["high"])
+        low    = float(last["low"])
+        volume = float(last["volume"]) if "volume" in last else 0
+        rsi    = float(last["rsi"])    if "rsi"    in last and not pd.isna(last["rsi"])    else None
+        adx    = float(last["adx"])    if "adx"    in last and not pd.isna(last["adx"])    else None
+        atr    = float(last["atr"])    if "atr"    in last and not pd.isna(last["atr"])    else None
+    except Exception as e:
+        log.info(f"DQ FAIL {symbol_key}: parse error {e}")
+        return False
+
+    # FIX 26 — Price sanity
+    ps = PRICE_SANITY.get(symbol_key, {"min": 0, "max": float("inf")})
+    if not (ps["min"] <= price <= ps["max"]):
+        log.info(f"DQ FAIL {symbol_key}: price {price} out of range [{ps['min']},{ps['max']}]")
+        return False
+
+    # FIX 24 — Candle sanity
+    if high < low:
+        log.info(f"DQ FAIL {symbol_key}: candle corrupt high={high} < low={low}")
+        return False
+    if not (low <= price <= high):
+        log.info(f"DQ FAIL {symbol_key}: close {price} outside candle [{low},{high}]")
+        return False
+
+    # FIX 25 — Volume sanity
+    if volume <= 0:
+        log.info(f"DQ FAIL {symbol_key}: zero/negative volume {volume}")
+        return False
+
+    # FIX 22 — RSI impossible values
+    if rsi is not None:
+        if rsi < RSI_DATA_MIN or rsi > RSI_DATA_MAX:
+            log.info(f"DQ FAIL {symbol_key}: RSI {rsi:.1f} impossible (range {RSI_DATA_MIN}-{RSI_DATA_MAX})")
+            return False
+
+    # FIX 21 — ADX unrealistic spike
+    if adx is not None:
+        if adx > ADX_MAX_REALISTIC:
+            log.info(f"DQ FAIL {symbol_key}: ADX {adx:.1f} unrealistic spike (max {ADX_MAX_REALISTIC})")
+            return False
+        if adx < 0:
+            log.info(f"DQ FAIL {symbol_key}: ADX {adx:.1f} negative — data error")
+            return False
+
+    # FIX 23 — ATR sanity
+    if atr is not None:
+        as_ = ATR_SANITY.get(symbol_key, {"min": 0, "max": float("inf")})
+        if atr <= 0:
+            log.info(f"DQ FAIL {symbol_key}: ATR {atr} zero/negative — data error")
+            return False
+        if atr < as_["min"] or atr > as_["max"]:
+            log.info(f"DQ FAIL {symbol_key}: ATR {atr:.5f} out of range [{as_['min']},{as_['max']}]")
+            return False
+
+    # Check last 5 candles for consecutive identical closes (frozen data)
+    if len(df) >= 5:
+        recent_closes = df["close"].tail(5).astype(float).tolist()
+        if len(set(recent_closes)) == 1:
+            log.info(f"DQ FAIL {symbol_key}: frozen data — 5 identical closes at {recent_closes[0]}")
+            return False
+
+    return True
+
+
+def validate_signal_indicators(rsi, adx, atr, symbol_key, direction):
+    """
+    Quick indicator sanity check before firing any signal.
+    Called right before execute_trade / execute_breakout.
+    """
+    # FIX 22 — RSI data error
+    if rsi < RSI_DATA_MIN or rsi > RSI_DATA_MAX:
+        log.info(f"SIGNAL BLOCKED {symbol_key}: RSI {rsi:.1f} data error")
+        return False
+
+    # FIX 21 — ADX spike
+    if adx > ADX_MAX_REALISTIC:
+        log.info(f"SIGNAL BLOCKED {symbol_key}: ADX {adx:.1f} unrealistic")
+        return False
+
+    # FIX 23 — ATR zero
+    if atr <= 0:
+        log.info(f"SIGNAL BLOCKED {symbol_key}: ATR {atr:.5f} invalid")
+        return False
+
+    # Combined: RSI extreme + no strong ADX = data error
+    if rsi < 12 and adx < 30:
+        log.info(f"SIGNAL BLOCKED {symbol_key}: RSI {rsi:.1f} extreme without ADX confirmation")
+        return False
+
     return True
 
 # ============================================================
@@ -1054,6 +1217,10 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
     adx           = float(df.iloc[-1]["adx"])
     dec           = MARKETS[symbol_key]["decimals"]
 
+    # FIX 21-26 — final indicator sanity check before firing signal
+    if not validate_signal_indicators(rsi, adx, atr, symbol_key, direction):
+        return
+
     # FIX 14 — Anticipation entry: set entry ahead of current price
     entry = calc_anticipation_entry(current_price, atr, direction, symbol_key)
 
@@ -1169,6 +1336,10 @@ def execute_breakout(symbol_key,df,direction,score,session,source,daily_bias):
     vol=float(df.iloc[-1]["volume"])
     volma=float(df.iloc[-1]["volma"]) if not pd.isna(df.iloc[-1]["volma"]) else 0
 
+    # FIX 21-26 — indicator sanity before breakout fires
+    if not validate_signal_indicators(rsi, adx, atr, symbol_key, direction):
+        return
+
     if rsi_extreme_block(rsi,direction): return
 
     # FIX 11 — daily bias check for breakout too
@@ -1253,6 +1424,11 @@ def process_symbol(symbol_key):
 
     df=add_ind(df)
     if df is None or len(df)<50: return
+
+    # FIX 21-26 — data quality validation
+    if not validate_data_quality(df, symbol_key):
+        log.info(f"REJECTED {symbol_key} data quality fail"); return
+
     if volatility_danger(df,symbol_key):
         log.info(f"REJECTED {symbol_key} extreme vol"); return
 
@@ -1350,6 +1526,10 @@ def process_breakout(symbol_key):
     df=add_ind(df)
     if df is None or len(df)<50: return
 
+    # FIX 21-26 — data quality validation
+    if not validate_data_quality(df, symbol_key):
+        log.info(f"BREAKOUT REJECTED {symbol_key} data quality fail"); return
+
     daily_bias=get_daily_bias(symbol_key,df)
     direction,score=detect_breakout_signal(df,symbol_key)
     if direction is None: return
@@ -1392,8 +1572,8 @@ def main():
         f"✅ FIX 16: Data Freshness Check\n"
         f"✅ FIX 17: Trailing SL Guide\n"
         f"✅ FIX 18: News Time Block\n"
-        f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n\n"
-        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v3"
+        f"✅ FIX 19: 30min Same Symbol Gap\n✅ FIX 20: Anticipation Distance Capped\n✅ FIX 21: ADX Spike Block (>60 blocked)\n✅ FIX 22: RSI Impossible Block (<10 or >90)\n✅ FIX 23: ATR Sanity Check Per Market\n✅ FIX 24: Candle Sanity Check\n✅ FIX 25: Volume Sanity Check\n✅ FIX 26: Price Range Sanity Check\n\n"
+        f"⚡ ULTIMATE HYBRID SUPREME 2026 — SCALPER EDITION v4"
     )
 
     loop_count=0
