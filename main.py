@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.2"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.6"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2008,6 +2008,849 @@ def run_engine_stochastic(df, symbol_key, direction):
     desc   = f"K:{k} D:{d} {zone}"
     return ok, score, f"STOCH: {desc}"
 
+
+# ============================================================
+# ENGINE 16 — NICO TRADES STRATEGY
+# Structure + Order Blocks + FVG + Liquidity + Session Bias
+# Full ICT-based SMC approach taught by Nico Trades
+# ============================================================
+
+def nico_identify_order_block(df, direction):
+    """
+    Nico Trades Order Block:
+    BEARISH OB: Last BULLISH candle before strong DOWN move
+    BULLISH OB: Last BEARISH candle before strong UP move
+    Price returning to OB = highest probability entry
+    """
+    if len(df)<10: return False,0,0,0
+
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+    price  = closes[-1]
+
+    for i in range(len(df)-3, max(len(df)-20,3), -1):
+        # Strong displacement move after this candle
+        displacement = abs(closes[i+1]-closes[i])
+        if displacement < atr*0.8: continue  # not strong enough
+
+        if direction=="SELL":
+            # Bearish OB = last bullish candle before drop
+            if closes[i]>opens[i]:  # bullish candle
+                ob_high = highs[i]
+                ob_low  = lows[i]
+                # Price returned to OB zone?
+                if ob_low<=price<=ob_high:
+                    return True, ob_high, ob_low, round((ob_high-ob_low),5)
+
+        if direction=="BUY":
+            # Bullish OB = last bearish candle before pump
+            if closes[i]<opens[i]:  # bearish candle
+                ob_high = highs[i]
+                ob_low  = lows[i]
+                if ob_low<=price<=ob_high:
+                    return True, ob_high, ob_low, round((ob_high-ob_low),5)
+
+    return False,0,0,0
+
+
+def nico_fvg_inside_ob(df, direction, ob_high, ob_low):
+    """
+    FVG inside Order Block = highest probability setup.
+    3-candle imbalance where gap overlaps with OB zone.
+    """
+    if len(df)<5 or ob_high==0: return False
+
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+
+    for i in range(1, min(10, len(df)-2)):
+        if direction=="BUY":
+            # Bullish FVG: c1 high < c3 low (gap going up)
+            fvg_lo = highs[-(i+2)]
+            fvg_hi = lows[-i]
+            if fvg_lo < fvg_hi:  # gap exists
+                # Does FVG overlap with OB?
+                overlap = min(fvg_hi, ob_high) - max(fvg_lo, ob_low)
+                if overlap > 0:
+                    return True
+        else:
+            # Bearish FVG: c1 low > c3 high
+            fvg_hi = lows[-(i+2)]
+            fvg_lo = highs[-i]
+            if fvg_hi > fvg_lo:
+                overlap = min(fvg_hi, ob_high) - max(fvg_lo, ob_low)
+                if overlap > 0:
+                    return True
+    return False
+
+
+def nico_liquidity_sweep_confirmed(df, direction):
+    """
+    Nico Trades liquidity sweep:
+    Price sweeps equal highs/lows (stop hunt) then reverses.
+    London sweeps Asian range → NY continues in sweep direction.
+    """
+    if len(df)<20: return False, ""
+
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    closes = df["close"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+
+    # Find equal highs/lows (within 0.1% of each other)
+    recent_highs = highs[-20:-1]
+    recent_lows  = lows[-20:-1]
+
+    last_high  = highs[-1]
+    last_low   = lows[-1]
+    last_close = closes[-1]
+
+    if direction=="SELL":
+        # Swept above equal highs then closed back below
+        eq_high = sorted(recent_highs)[-1]
+        prev_high= sorted(recent_highs)[-2] if len(recent_highs)>1 else eq_high
+        eq_level = (eq_high+prev_high)/2
+        tolerance= atr*0.3
+
+        if abs(eq_high-prev_high)<tolerance:  # equal highs
+            if last_high>eq_high and last_close<eq_high:
+                return True, f"Equal Hi sweep @{eq_level:.3f} ✅"
+
+        # Previous day high sweep
+        pdh = max(highs[-30:-5]) if len(highs)>35 else max(recent_highs)
+        if last_high>pdh and last_close<pdh:
+            return True, f"PDH sweep @{pdh:.3f} ✅"
+
+    if direction=="BUY":
+        eq_low  = sorted(recent_lows)[0]
+        prev_low= sorted(recent_lows)[1] if len(recent_lows)>1 else eq_low
+        eq_level= (eq_low+prev_low)/2
+        tolerance= atr*0.3
+
+        if abs(eq_low-prev_low)<tolerance:  # equal lows
+            if last_low<eq_low and last_close>eq_low:
+                return True, f"Equal Lo sweep @{eq_level:.3f} ✅"
+
+        pdl = min(lows[-30:-5]) if len(lows)>35 else min(recent_lows)
+        if last_low<pdl and last_close>pdl:
+            return True, f"PDL sweep @{pdl:.3f} ✅"
+
+    return False, ""
+
+
+def nico_session_bias(session, direction):
+    """
+    Nico Trades session model:
+    Asian = range/accumulation
+    London = manipulation (sweeps liquidity)
+    NY = true move (trade in direction of London sweep)
+    Best entries: London open + NY open
+    """
+    score = 0; reason = ""
+
+    if session in ["London","NY Killzone","NY+London"]:
+        score += 4
+        reason = f"Prime session: {session} ✅"
+    elif session == "Asian Precision":
+        score += 1
+        reason = "Asian range (lower prob)"
+    elif session in ["India Open","India Midday"]:
+        score += 3
+        reason = f"India session: {session} ✅"
+
+    return score, reason
+
+
+def nico_market_structure(df, direction):
+    """
+    Nico Trades structure analysis:
+    BULL: Higher Highs + Higher Lows
+    BEAR: Lower Lows + Lower Highs
+    Trade in direction of structure only.
+    """
+    if len(df)<20: return False, ""
+
+    highs  = df["high"].astype(float).values[-20:]
+    lows   = df["low"].astype(float).values[-20:]
+    closes = df["close"].astype(float).values[-20:]
+
+    # Find swing points
+    sh = [highs[i] for i in range(1,len(highs)-1)
+          if highs[i]>highs[i-1] and highs[i]>highs[i+1]]
+    sl = [lows[i]  for i in range(1,len(lows)-1)
+          if lows[i]<lows[i-1]  and lows[i]<lows[i+1]]
+
+    if len(sh)<2 or len(sl)<2: return True, "Insufficient structure"
+
+    if direction=="BUY":
+        hh = sh[-1]>sh[-2]   # higher high
+        hl = sl[-1]>sl[-2]   # higher low
+        if hh and hl:  return True,"HH+HL Bull Structure ✅"
+        if hh or hl:   return True,"Partial Bull Structure ⚠️"
+        return False,"Bear structure — no BUY"
+
+    if direction=="SELL":
+        ll = sl[-1]<sl[-2]   # lower low
+        lh = sh[-1]<sh[-2]   # lower high
+        if ll and lh:  return True,"LL+LH Bear Structure ✅"
+        if ll or lh:   return True,"Partial Bear Structure ⚠️"
+        return False,"Bull structure — no SELL"
+
+    return False,""
+
+
+def run_engine_nico(df, symbol_key, direction, session):
+    """
+    Full Nico Trades engine.
+    Combines: Order Block + FVG + Liquidity Sweep + Structure + Session
+    Returns: (passed, score, description)
+    """
+    score=0; details=[]
+
+    # 1. Market Structure
+    struct_ok, struct_desc = nico_market_structure(df, direction)
+    if struct_ok:
+        score+=5; details.append(f"STRUCTURE: {struct_desc}")
+    else:
+        return False, 0, f"NICO BLOCKED: {struct_desc}"
+
+    # 2. Order Block
+    ob_ok, ob_hi, ob_lo, ob_size = nico_identify_order_block(df, direction)
+    if ob_ok:
+        dec = MARKETS[symbol_key]["decimals"]
+        score+=6; details.append(f"OB:{ob_lo:.{dec}f}-{ob_hi:.{dec}f} ✅")
+
+        # 3. FVG inside OB (bonus)
+        if nico_fvg_inside_ob(df, direction, ob_hi, ob_lo):
+            score+=4; details.append("FVG inside OB ✅ HIGH PROB")
+    else:
+        details.append("No OB retest ⚠️")
+
+    # 4. Liquidity Sweep
+    sweep_ok, sweep_desc = nico_liquidity_sweep_confirmed(df, direction)
+    if sweep_ok:
+        score+=5; details.append(sweep_desc)
+    else:
+        details.append("No liq sweep")
+
+    # 5. Session bias
+    sess_score, sess_desc = nico_session_bias(session, direction)
+    score+=sess_score; details.append(sess_desc)
+
+    # Nico requires: structure + (OB or sweep)
+    has_core = struct_ok and (ob_ok or sweep_ok)
+    passed   = has_core and score>=10
+
+    desc = " | ".join(details)
+    log.info(f"NICO {symbol_key} {direction}: score={score} ob={ob_ok} sweep={sweep_ok}")
+    return passed, score, f"NICO: {desc}"
+
+
+# ============================================================
+# ENGINE 17 — EMA 200 STRATEGY
+# The most widely used institutional trend filter
+# Price above EMA200 = BULL | Below = BEAR
+# Retest + bounce = highest probability entry
+# ============================================================
+
+def ema200_trend_filter(df, direction):
+    """
+    Core EMA200 rule:
+    Price > EMA200 = only BUY signals
+    Price < EMA200 = only SELL signals
+    Never trade against EMA200
+    """
+    if len(df)<10: return False, 0, ""
+    price  = float(df.iloc[-1]["close"])
+    ema200 = float(df.iloc[-1]["ema200"])
+    if ema200==0 or pd.isna(ema200): return False,0,""
+
+    dist_pct = abs(price-ema200)/ema200*100
+
+    if direction=="BUY":
+        if price>ema200:
+            return True, 5, f"Above EMA200:{ema200:.2f} ✅ (+{dist_pct:.2f}%)"
+        return False, 0, f"Below EMA200 — no BUY"
+
+    if direction=="SELL":
+        if price<ema200:
+            return True, 5, f"Below EMA200:{ema200:.2f} ✅ (-{dist_pct:.2f}%)"
+        return False, 0, f"Above EMA200 — no SELL"
+
+    return False,0,""
+
+
+def ema200_retest_zone(df, direction, symbol_key):
+    """
+    Price pulling back TO EMA200 = best entry zone.
+    Within 1 ATR of EMA200 = retest zone.
+    Price bouncing off EMA200 = confirmation.
+    """
+    if len(df)<5: return False, 0, ""
+    price  = float(df.iloc[-1]["close"])
+    ema200 = float(df.iloc[-1]["ema200"])
+    atr    = float(df.iloc[-1]["atr"])
+    dec    = MARKETS[symbol_key]["decimals"]
+
+    if ema200==0 or pd.isna(ema200): return False,0,""
+
+    dist = abs(price-ema200)
+
+    # Zone 1: Price within 0.5 ATR of EMA200 = touching
+    if dist<=atr*0.5:
+        return True, 8, f"EMA200 retest zone ✅ dist={dist:.{dec}f}"
+
+    # Zone 2: Price within 1.5 ATR = near retest
+    if dist<=atr*1.5:
+        return True, 5, f"Near EMA200 ✅ dist={dist:.{dec}f}"
+
+    # Zone 3: Price too far = overextended = lower score
+    if dist>atr*5:
+        return False, 0, f"Too far from EMA200 ({dist:.{dec}f} > 5 ATR)"
+
+    return True, 2, f"EMA200 in play dist={dist:.{dec}f}"
+
+
+def ema200_bounce_confirmation(df, direction):
+    """
+    Confirmation that price is BOUNCING off EMA200:
+    BUY: price wicked below EMA200 but closed above = bullish bounce
+    SELL: price wicked above EMA200 but closed below = bearish bounce
+    """
+    if len(df)<3: return False, ""
+
+    ema200_now  = float(df.iloc[-1]["ema200"])
+    ema200_prev = float(df.iloc[-2]["ema200"])
+    close_now   = float(df.iloc[-1]["close"])
+    low_now     = float(df.iloc[-1]["low"])
+    high_now    = float(df.iloc[-1]["high"])
+    close_prev  = float(df.iloc[-2]["close"])
+
+    if ema200_now==0: return False,""
+
+    if direction=="BUY":
+        # Wicked below EMA200 but closed above = bounce
+        wick_below = low_now < ema200_now
+        close_above= close_now > ema200_now
+        was_below  = close_prev < ema200_prev
+        if wick_below and close_above:
+            return True, "Bounced off EMA200 ✅ (wick below, close above)"
+        if was_below and close_now>ema200_now:
+            return True, "Crossed above EMA200 ✅ (breakout)"
+
+    if direction=="SELL":
+        wick_above = high_now > ema200_now
+        close_below= close_now < ema200_now
+        was_above  = close_prev > ema200_prev
+        if wick_above and close_below:
+            return True, "Rejected at EMA200 ✅ (wick above, close below)"
+        if was_above and close_now<ema200_now:
+            return True, "Crossed below EMA200 ✅ (breakdown)"
+
+    return False, ""
+
+
+def ema200_distance_score(df, direction, symbol_key):
+    """
+    Score based on how close price is to EMA200.
+    Closer = higher probability of bounce/support.
+    Too far = overextended = low score.
+    """
+    if len(df)<5: return 0, ""
+    price  = float(df.iloc[-1]["close"])
+    ema200 = float(df.iloc[-1]["ema200"])
+    atr    = float(df.iloc[-1]["atr"])
+    dec    = MARKETS[symbol_key]["decimals"]
+
+    if ema200==0 or atr==0: return 0,""
+    dist_atr = abs(price-ema200)/atr
+
+    if   dist_atr<=0.5:  return 5, f"TOUCHING EMA200 🎯"
+    elif dist_atr<=1.0:  return 4, f"0.5-1 ATR from EMA200"
+    elif dist_atr<=2.0:  return 3, f"1-2 ATR from EMA200"
+    elif dist_atr<=3.0:  return 2, f"2-3 ATR from EMA200"
+    elif dist_atr<=5.0:  return 1, f"3-5 ATR from EMA200"
+    else:                return 0, f"OVEREXTENDED ({dist_atr:.1f} ATR)"
+
+
+def ema200_slope(df, direction):
+    """
+    EMA200 slope direction confirms trend strength.
+    Rising EMA200 = strong bull trend
+    Falling EMA200 = strong bear trend
+    Flat EMA200 = ranging = lower probability
+    """
+    if len(df)<10: return True, ""  # allow if can't check
+    ema200_now  = float(df.iloc[-1]["ema200"])
+    ema200_old  = float(df.iloc[-5]["ema200"])
+    if ema200_now==0: return True,""
+
+    slope = ema200_now - ema200_old
+
+    if direction=="BUY":
+        if slope>0:   return True, f"EMA200 rising ✅ slope:{slope:+.3f}"
+        elif slope<-abs(slope)*2: return False, f"EMA200 falling hard against BUY"
+        return True, f"EMA200 flat ⚠️"
+
+    if direction=="SELL":
+        if slope<0:   return True, f"EMA200 falling ✅ slope:{slope:+.3f}"
+        elif slope>abs(slope)*2:  return False, f"EMA200 rising hard against SELL"
+        return True, f"EMA200 flat ⚠️"
+
+    return True,""
+
+
+def run_engine_ema200(df, symbol_key, direction):
+    """
+    Full EMA200 engine combining all components.
+    Returns: (passed, score, description)
+    """
+    score=0; details=[]
+
+    # 1. Core trend filter (mandatory)
+    trend_ok, trend_sc, trend_desc = ema200_trend_filter(df, direction)
+    if not trend_ok:
+        return False, 0, f"EMA200 BLOCKED: {trend_desc}"
+    score+=trend_sc; details.append(trend_desc)
+
+    # 2. Slope direction
+    slope_ok, slope_desc = ema200_slope(df, direction)
+    if slope_ok and slope_desc:
+        score+=3; details.append(slope_desc)
+
+    # 3. Retest zone
+    retest_ok, retest_sc, retest_desc = ema200_retest_zone(df, direction, symbol_key)
+    if retest_ok:
+        score+=retest_sc; details.append(retest_desc)
+
+    # 4. Bounce confirmation
+    bounce_ok, bounce_desc = ema200_bounce_confirmation(df, direction)
+    if bounce_ok:
+        score+=6; details.append(bounce_desc)
+
+    # 5. Distance score
+    dist_sc, dist_desc = ema200_distance_score(df, direction, symbol_key)
+    score+=dist_sc
+    if dist_desc: details.append(dist_desc)
+
+    passed = trend_ok and score>=8
+    desc   = " | ".join(details)
+    log.info(f"EMA200 {symbol_key} {direction}: score={score} retest={retest_ok} bounce={bounce_ok}")
+    return passed, score, f"EMA200: {desc}"
+
+
+# ============================================================
+# ENGINE 18 — ZONE TO ZONE STRATEGY
+# Based on charts: EMA50 + EMA200 + Supply/Demand zones
+# Catch explosive moves FROM zone TO zone
+# Entry at demand zone → target supply zone (full move)
+# Entry at supply zone → target demand zone (full move)
+# ============================================================
+
+def detect_ema50_ema200_alignment(df, direction):
+    """
+    EMA50 + EMA200 stack confirmation.
+    BUY:  EMA50 > EMA200 + price above both = strong bull
+    SELL: EMA50 < EMA200 + price below both = strong bear
+    Image 3 shows EMA50 (red) + EMA200 (blue) — price bounced from below both
+    """
+    if len(df)<5: return False,""
+    last   = df.iloc[-1]
+    ema50  = float(last["ema50"])
+    ema200 = float(last["ema200"])
+    price  = float(last["close"])
+
+    if ema50==0 or ema200==0: return False,""
+
+    if direction=="BUY":
+        if ema50>ema200 and price>ema50:
+            return True, f"EMA50>{ema200:.1f} EMA200 BULL stack ✅"
+        if price<ema200 and price<ema50:
+            # Price below both = in demand zone = bounce expected
+            return True, f"Price below both EMAs = demand zone bounce ✅"
+    else:
+        if ema50<ema200 and price<ema50:
+            return True, f"EMA50<EMA200 BEAR stack ✅"
+        if price>ema200 and price>ema50:
+            return True, f"Price above both EMAs = supply zone rejection ✅"
+
+    return False,""
+
+
+def find_zone_to_zone_targets(df, symbol_key, direction):
+    """
+    Find supply and demand zones from recent structure.
+    Maps the FULL zone-to-zone distance as potential TP.
+    Entry at one zone, target = opposite zone.
+    """
+    if len(df)<30: return False,0,0,0,0
+
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    price  = closes[-1]
+    atr    = float(df.iloc[-1]["atr"])
+    dec    = MARKETS[symbol_key]["decimals"]
+
+    # Find recent supply zone (cluster of bearish candles at top)
+    supply_zones = []
+    demand_zones = []
+
+    for i in range(5, min(50, len(df)-2)):
+        body = abs(closes[i]-opens[i])
+        if body < atr*0.3: continue  # ignore small candles
+
+        # Supply: bearish candle in upper range
+        if closes[i]<opens[i]:  # bearish
+            zone_hi = max(highs[i], highs[i-1])
+            zone_lo = min(closes[i], opens[i])
+            if zone_lo > price:  # above current price
+                supply_zones.append((zone_lo, zone_hi))
+
+        # Demand: bullish candle in lower range
+        if closes[i]>opens[i]:  # bullish
+            zone_hi = max(closes[i], opens[i])
+            zone_lo = min(lows[i], lows[i-1])
+            if zone_hi < price:  # below current price
+                demand_zones.append((zone_lo, zone_hi))
+
+    if not supply_zones and not demand_zones:
+        return False,0,0,0,0
+
+    # For BUY: entry at demand zone, target nearest supply zone
+    if direction=="BUY" and demand_zones and supply_zones:
+        demand_lo = max(d[0] for d in demand_zones[-3:]) if demand_zones else 0
+        demand_hi = max(d[1] for d in demand_zones[-3:]) if demand_zones else 0
+        supply_lo = min(s[0] for s in supply_zones[:3]) if supply_zones else 0
+        supply_hi = min(s[1] for s in supply_zones[:3]) if supply_zones else 0
+
+        if demand_hi>0 and supply_lo>demand_hi:
+            zone_dist = supply_lo - demand_hi
+            rr = round(zone_dist / max(atr*1.5, 0.001), 1)
+            return True, demand_lo, demand_hi, supply_lo, rr
+
+    # For SELL: entry at supply zone, target nearest demand zone
+    if direction=="SELL" and supply_zones and demand_zones:
+        supply_lo = min(s[0] for s in supply_zones[:3]) if supply_zones else 0
+        supply_hi = min(s[1] for s in supply_zones[:3]) if supply_zones else 0
+        demand_lo = max(d[0] for d in demand_zones[-3:]) if demand_zones else 0
+        demand_hi = max(d[1] for d in demand_zones[-3:]) if demand_zones else 0
+
+        if supply_lo>0 and demand_hi>0 and supply_lo>demand_hi:
+            zone_dist = supply_lo - demand_hi
+            rr = round(zone_dist / max(atr*1.5, 0.001), 1)
+            return True, supply_lo, supply_hi, demand_lo, rr
+
+    return False,0,0,0,0
+
+
+def detect_zone_compression(df, symbol_key):
+    """
+    Range compression inside zones (Image 1 pattern):
+    Price consolidating between supply and demand zones.
+    Tight range = energy building = explosive move coming.
+    """
+    if len(df)<15: return False, 0
+
+    recent_highs = df["high"].astype(float).tail(10).values
+    recent_lows  = df["low"].astype(float).tail(10).values
+    atr          = float(df.iloc[-1]["atr"])
+
+    range_size = max(recent_highs) - min(recent_lows)
+    compression_ratio = range_size / (atr * 10)
+
+    # Tight range = compression < 0.5x ATR range
+    if compression_ratio < 0.5:
+        return True, round(compression_ratio, 2)
+
+    return False, round(compression_ratio, 2)
+
+
+def detect_explosive_candle_setup(df, direction):
+    """
+    Image 3 pattern: Massive candle FROM demand zone.
+    Detect when conditions are set for explosive move:
+    - Price at zone edge
+    - Previous candles were small/bearish (compression)
+    - Volume increasing
+    - EMA lines converging
+    """
+    if len(df)<6: return False
+
+    atr    = float(df.iloc[-1]["atr"])
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    vols   = df["volume"].astype(float).values
+    volma  = float(df.iloc[-1]["volma"]) if not pd.isna(df.iloc[-1]["volma"]) else 0
+
+    # Last 3 candles compressed
+    bodies = [abs(closes[i]-opens[i]) for i in range(-4,-1)]
+    avg_body = sum(bodies)/len(bodies)
+    compressed = avg_body < atr*0.4
+
+    # Volume building
+    vol_now  = float(df.iloc[-1]["volume"])
+    vol_building = volma>0 and vol_now>volma*1.2
+
+    # Current candle direction
+    if direction=="BUY":
+        candle_ok = closes[-1]>opens[-1]  # green candle
+    else:
+        candle_ok = closes[-1]<opens[-1]  # red candle
+
+    return compressed and (vol_building or candle_ok)
+
+
+def run_engine_zone_to_zone(df, symbol_key, direction, session):
+    """
+    Full zone-to-zone engine.
+    Catches explosive moves between supply and demand zones.
+    Uses EMA50 + EMA200 + zone detection + compression.
+    Returns: (passed, score, description)
+    """
+    score=0; details=[]
+
+    # 1. EMA50 + EMA200 alignment
+    ema_ok, ema_desc = detect_ema50_ema200_alignment(df, direction)
+    if ema_ok:
+        score+=5; details.append(ema_desc)
+    else:
+        details.append("EMA stack not aligned")
+
+    # 2. Zone-to-zone mapping
+    z2z_ok, entry_lo, entry_hi, target, rr = find_zone_to_zone_targets(df, symbol_key, direction)
+    if z2z_ok:
+        dec = MARKETS[symbol_key]["decimals"]
+        score+=7
+        details.append(f"Zone2Zone: entry {entry_lo:.{dec}f}-{entry_hi:.{dec}f} → target {target:.{dec}f} (RR:{rr})")
+    else:
+        details.append("No clear zone-to-zone")
+
+    # 3. Compression detection (Image 1 pattern)
+    comp_ok, comp_ratio = detect_zone_compression(df, symbol_key)
+    if comp_ok:
+        score+=4; details.append(f"Compression ratio:{comp_ratio} ✅ explosive move coming")
+
+    # 4. Explosive candle setup (Image 3 pattern)
+    explosive_ok = detect_explosive_candle_setup(df, direction)
+    if explosive_ok:
+        score+=5; details.append("Explosive candle setup ✅")
+
+    # 5. Session bonus (London + NY = best for explosive moves)
+    if session in ["London","NY Killzone","NY+London"]:
+        score+=3; details.append(f"Prime session {session} ✅")
+
+    passed = score>=10 and (ema_ok or z2z_ok)
+    desc   = " | ".join(details)
+    log.info(f"ZONE2ZONE {symbol_key} {direction}: score={score} z2z={z2z_ok} comp={comp_ok}")
+    return passed, score, f"Z2Z: {desc}"
+
+
+# ============================================================
+# ENGINE 19 — UMAR STOP HUNT + DEMAND ZONE EXPLOSION
+# Based on @umarpnj strategy: 200 pips weekly
+# Wait for stop hunt BELOW demand zone then enter on recovery
+# = Fake breakdown → real breakout upward
+# Works same for supply zones: stop hunt ABOVE then SELL
+# ============================================================
+
+def detect_stop_hunt_recovery(df, direction, symbol_key):
+    """
+    The core of Umar's strategy:
+    BUY: Price dips BELOW demand zone (stops triggered)
+         then RECOVERS back above zone = stop hunt confirmed
+         Enter on recovery candle = safest entry
+
+    SELL: Price spikes ABOVE supply zone (stops triggered)
+          then REJECTS back below zone = stop hunt confirmed
+          Enter on rejection candle = safest entry
+    """
+    if len(df)<6: return False, 0, 0, ""
+
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+    dec    = MARKETS[symbol_key]["decimals"]
+
+    # Find recent zone levels
+    recent_high = max(highs[-20:-3])
+    recent_low  = min(lows[-20:-3])
+
+    # BUY: stop hunt below recent low then recovery
+    if direction=="BUY":
+        prev_low = min(lows[-6:-2])  # recent swing low
+
+        for i in range(-3, -6, -1):  # check last 3 candles
+            if i+1 >= 0: continue
+            # Candle wicked BELOW prev_low (stop hunt)
+            wick_below = lows[i] < prev_low - atr*0.1
+            # But CLOSED back above (recovery)
+            close_above = closes[i] > prev_low
+
+            if wick_below and close_above:
+                hunt_level = lows[i]
+                recovery   = closes[i]
+                size       = recovery - hunt_level
+                return True, hunt_level, recovery, f"Stop hunt @{hunt_level:.{dec}f} recovered ✅"
+
+        # Also check: current price recovering above recent low
+        if closes[-1] > recent_low and lows[-2] < recent_low:
+            return True, lows[-2], closes[-1], f"Zone recovery {recent_low:.{dec}f} ✅"
+
+    # SELL: stop hunt above recent high then rejection
+    if direction=="SELL":
+        prev_high = max(highs[-6:-2])
+
+        for i in range(-3, -6, -1):
+            if i+1 >= 0: continue
+            wick_above  = highs[i] > prev_high + atr*0.1
+            close_below = closes[i] < prev_high
+
+            if wick_above and close_below:
+                hunt_level = highs[i]
+                rejection  = closes[i]
+                return True, hunt_level, rejection, f"Stop hunt @{hunt_level:.{dec}f} rejected ✅"
+
+        if closes[-1] < recent_high and highs[-2] > recent_high:
+            return True, highs[-2], closes[-1], f"Zone rejection {recent_high:.{dec}f} ✅"
+
+    return False, 0, 0, ""
+
+
+def demand_zone_explosion_setup(df, direction, symbol_key):
+    """
+    After stop hunt, detect the BIG CANDLE setup:
+    - Small consolidation candles (accumulation)
+    - Then explosive candle with large body
+    - Volume spike confirms institutional entry
+    """
+    if len(df)<8: return False, 0
+
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    vols   = df["volume"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+    volma  = float(df.iloc[-1]["volma"]) if not pd.isna(df.iloc[-1]["volma"]) else 0
+
+    # Last 3 candles before current = small (accumulation)
+    prev_bodies = [abs(closes[i]-opens[i]) for i in range(-4,-1)]
+    avg_prev    = sum(prev_bodies)/len(prev_bodies) if prev_bodies else atr
+
+    # Current candle = big body (explosion)
+    curr_body = abs(closes[-1]-opens[-1])
+    explosion = curr_body > avg_prev*2.0 and curr_body > atr*0.5
+
+    # Volume spike
+    curr_vol = float(vols[-1])
+    vol_spike = volma>0 and curr_vol>volma*1.8
+
+    # Direction correct
+    if direction=="BUY":
+        dir_ok = closes[-1]>opens[-1]  # green explosion candle
+    else:
+        dir_ok = closes[-1]<opens[-1]  # red explosion candle
+
+    score = 0
+    if explosion: score+=5
+    if vol_spike:  score+=4
+    if dir_ok:     score+=3
+
+    return score>=5, score
+
+
+def umar_200pip_target(df, direction, symbol_key, entry):
+    """
+    Umar targets 200 pips.
+    Calculate if 200-pip target is achievable based on
+    recent swing structure and volatility.
+    """
+    atr = float(df.iloc[-1]["atr"])
+    dec = MARKETS[symbol_key]["decimals"]
+
+    # 200 pips in context of the market
+    pip_200 = {
+        "XAU/USD":   20.0,   # 200 pips = 20pts on gold
+        "XAG/USD":   0.200,
+        "NAS100":    200.0,
+        "SPX500":    20.0,
+        "US30":      200.0,
+        "EUR/USD":   0.0200,
+        "GBP/JPY":   2.000,
+        "USD/JPY":   2.000,
+        "BTC/USD":   2000.0,
+        "ETH/USD":   200.0,
+        "NIFTY50":   200.0,
+        "BANKNIFTY": 400.0,
+        "SENSEX":    500.0,
+        "RELIANCE":  20.0,
+        "TCS":       20.0,
+    }
+
+    target_dist = pip_200.get(symbol_key, atr*5)
+    if direction=="BUY":
+        target_200 = round(entry + target_dist, dec)
+    else:
+        target_200 = round(entry - target_dist, dec)
+
+    # Check if swing room available
+    highs = df["high"].astype(float).values
+    lows  = df["low"].astype(float).values
+    if direction=="BUY":
+        available = max(highs[-50:]) - entry
+        achievable = available >= target_dist*0.7
+    else:
+        available = entry - min(lows[-50:])
+        achievable = available >= target_dist*0.7
+
+    return achievable, target_200, round(target_dist,dec)
+
+
+def run_engine_umar(df, symbol_key, direction, session):
+    """
+    Full Umar stop-hunt + demand zone explosion engine.
+    Returns: (passed, score, description)
+    """
+    score=0; details=[]
+
+    # 1. Stop hunt detection (core of strategy)
+    hunt_ok, hunt_level, recovery, hunt_desc = detect_stop_hunt_recovery(
+        df, direction, symbol_key
+    )
+    if hunt_ok:
+        score+=8; details.append(hunt_desc)
+    else:
+        details.append("No stop hunt detected")
+
+    # 2. Explosion candle setup
+    explode_ok, explode_sc = demand_zone_explosion_setup(df, direction, symbol_key)
+    if explode_ok:
+        score+=explode_sc; details.append("Explosion candle ✅")
+
+    # 3. 200 pip target check
+    price = float(df.iloc[-1]["close"])
+    target_ok, target_200, dist = umar_200pip_target(df, direction, symbol_key, price)
+    if target_ok:
+        dec = MARKETS[symbol_key]["decimals"]
+        score+=4; details.append(f"200-pip target achievable → {target_200:.{dec}f} ✅")
+
+    # 4. Session (Umar trades during active sessions)
+    if session in ["London","NY Killzone","NY+London"]:
+        score+=3; details.append(f"{session} session ✅")
+    elif session in ["India Open","India Midday"]:
+        score+=2; details.append(f"{session} ✅")
+
+    # Must have stop hunt confirmation to pass
+    passed = hunt_ok and score>=12
+    desc   = " | ".join(details)
+    log.info(f"UMAR {symbol_key} {direction}: score={score} hunt={hunt_ok} explode={explode_ok}")
+    return passed, score, f"UMAR: {desc}"
+
 # ============================================================
 # ADAPTIVE THRESHOLD ENGINE
 # Score must be in top 20% historically for that market
@@ -2114,6 +2957,22 @@ def run_all_8_engines(df, symbol_key, direction, session, base_score):
     e15p,e15s,e15d=run_engine_stochastic(df,symbol_key,direction)
     if e15p: engines_passed.append("STOCH"); engine_lines.append(f"E15 ✅ {e15d}"); total_bonus+=e15s
 
+    # ENGINE 16 — Nico Trades
+    e16p,e16s,e16d=run_engine_nico(df,symbol_key,direction,session)
+    if e16p: engines_passed.append("NICO"); engine_lines.append(f"E16 ✅ {e16d}"); total_bonus+=e16s
+
+    # ENGINE 17 — EMA200 Strategy
+    e17p,e17s,e17d=run_engine_ema200(df,symbol_key,direction)
+    if e17p: engines_passed.append("EMA200"); engine_lines.append(f"E17 ✅ {e17d}"); total_bonus+=e17s
+
+    # ENGINE 18 — Zone-to-Zone
+    e18p,e18s,e18d=run_engine_zone_to_zone(df,symbol_key,direction,session)
+    if e18p: engines_passed.append("ZONE2ZONE"); engine_lines.append(f"E18 ✅ {e18d}"); total_bonus+=e18s
+
+    # ENGINE 19 — Umar Stop Hunt + Demand Zone Explosion
+    e19p,e19s,e19d=run_engine_umar(df,symbol_key,direction,session)
+    if e19p: engines_passed.append("UMAR"); engine_lines.append(f"E19 ✅ {e19d}"); total_bonus+=e19s
+
     n = len(engines_passed)
     update_score_history(symbol_key, total_bonus)
 
@@ -2125,7 +2984,8 @@ def run_all_8_engines(df, symbol_key, direction, session, base_score):
         log.info(f"ADAPTIVE FAIL {symbol_key}: score not top {100-ADAPTIVE_PERCENTILE}%")
         return False,0,n,""
 
-    if n==15:  quality="ABSOLUTE PERFECT 🔥🔥🔥🔥🔥🔥"
+    if n>=19: quality="ABSOLUTE PERFECT 🔥🔥🔥🔥🔥🔥"
+    elif n>=15: quality="NEAR ABSOLUTE 🔥🔥🔥🔥🔥"
     elif n>=12: quality="PERFECT 🔥🔥🔥🔥🔥"
     elif n>=10: quality="NEAR PERFECT 🔥🔥🔥🔥"
     elif n>=8:  quality="GOD-TIER 🔥🔥🔥"
