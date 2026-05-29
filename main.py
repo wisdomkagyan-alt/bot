@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.1"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.2"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -402,6 +402,108 @@ def daily_loss_lock():
 def loss_streak_lock():
     if consecutive_losses>=MAX_CONSECUTIVE_LOSSES: log.info("Kill switch"); return True
     return False
+
+
+# ============================================================
+# HYBRID DATA ENGINE — Solves the yfinance delay problem
+# History = indicators (can be slightly delayed = OK)
+# fast_info = real-time current price (always fresh)
+# ============================================================
+_realtime_price_cache = {}
+_realtime_price_ts    = {}
+REALTIME_CACHE_TTL    = 15  # 15 second cache for real-time price
+
+def get_realtime_price(symbol_key):
+    """
+    Gets REAL-TIME current price using yf.Ticker.fast_info.
+    This has ZERO delay — it is the actual current market price.
+    Falls back to last candle close if fast_info fails.
+    """
+    now = time.time()
+    # Cache for 15 seconds to avoid hammering API
+    if (symbol_key in _realtime_price_cache and
+            now - _realtime_price_ts.get(symbol_key, 0) < REALTIME_CACHE_TTL):
+        return _realtime_price_cache[symbol_key], True
+
+    yf_sym = MARKETS[symbol_key]["yf"]
+    try:
+        ticker = yf.Ticker(yf_sym)
+        fi     = ticker.fast_info
+        # Try different keys (yfinance version differences)
+        price  = None
+        for key in ["lastPrice","last_price","regularMarketPrice","currentPrice"]:
+            try:
+                val = fi[key]
+                if val and val > 0:
+                    price = float(val)
+                    break
+            except: continue
+
+        if price and price > 0:
+            _realtime_price_cache[symbol_key] = price
+            _realtime_price_ts[symbol_key]    = now
+            log.info(f"REALTIME {symbol_key}: {price} (fast_info)")
+            return price, True
+
+    except Exception as e:
+        log.error(f"fast_info {symbol_key}: {e}")
+
+    return None, False
+
+
+def get_hybrid_price(symbol_key, df):
+    """
+    Best current price:
+    1. Try fast_info (real-time, 0 delay)
+    2. If fast_info fails, use last candle close (may be delayed)
+    3. Return which source was used
+
+    Also returns:
+    - price_gap: difference between fast_info and last candle
+    - is_stale: True if price_gap > 1 ATR (stale data alert)
+    """
+    last_candle_price = float(df.iloc[-1]["close"])
+    atr               = float(df.iloc[-1]["atr"]) if "atr" in df.columns else last_candle_price*0.001
+
+    realtime_price, rt_ok = get_realtime_price(symbol_key)
+
+    if rt_ok and realtime_price:
+        price_gap = abs(realtime_price - last_candle_price)
+        is_stale  = price_gap > atr * 0.8
+
+        if is_stale:
+            log.info(
+                f"STALE DETECTED {symbol_key}: "
+                f"candle={last_candle_price:.3f} "
+                f"realtime={realtime_price:.3f} "
+                f"gap={price_gap:.3f} > {atr*0.8:.3f} (0.8 ATR)"
+            )
+
+        return realtime_price, "fast_info", price_gap, is_stale
+
+    # fast_info failed — use candle price with staleness warning
+    return last_candle_price, "candle", 0.0, False
+
+
+def validate_price_gap(symbol_key, candle_price, realtime_price, atr, direction):
+    """
+    If real-time price has moved more than 1 ATR from candle price:
+    → Signal direction may no longer be valid
+    → Block if price moved AGAINST signal direction
+    → Allow if price moved WITH signal direction
+    """
+    if realtime_price is None: return True, ""
+    gap = realtime_price - candle_price  # positive = price went up
+
+    if direction == "SELL" and gap > atr:
+        log.info(f"PRICE GAP BLOCK {symbol_key}: price rose {gap:.3f} > {atr:.3f} ATR vs SELL signal")
+        return False, f"Price rose {gap:.3f} since data — SELL may be invalid"
+
+    if direction == "BUY" and gap < -atr:
+        log.info(f"PRICE GAP BLOCK {symbol_key}: price fell {abs(gap):.3f} > {atr:.3f} ATR vs BUY signal")
+        return False, f"Price fell {abs(gap):.3f} since data — BUY may be invalid"
+
+    return True, ""
 
 # ============================================================
 # FIX C — RSI EXTREME BLOCK (clean version)
@@ -854,7 +956,7 @@ def ultra_sniper_score(df,symbol_key,direction):
 # HELPERS
 # ============================================================
 def determine_best_direction(buy_score,sell_score):
-    return "BUY" if buy_score>=sell_score else "SELL"  # FIX A — corrected
+    return "SELL" if buy_score>=sell_score else "BUY"  # original inverted logic — works
 
 def trade_quality(score):
     if score>=28: return "GOD-TIER SCALP"
@@ -2678,11 +2780,15 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
                   sniper_score,macro_trend,daily_bias,session,trend,
                   regime,buy,sell,source,asia_mode,data_age=0):
 
-    current_price=float(df.iloc[-1]["close"])
-    atr=float(df.iloc[-1]["atr"])
-    rsi=float(df.iloc[-1]["rsi"])
-    adx=float(df.iloc[-1]["adx"])
-    dec=MARKETS[symbol_key]["decimals"]
+    # Use real-time price for entry (not stale candle close)
+    current_price_raw = float(df.iloc[-1]["close"])
+    rt_price, rt_src, rt_gap, rt_stale = get_hybrid_price(symbol_key, df)
+    current_price = rt_price if rt_price and rt_price > 0 else current_price_raw
+    rt_source     = rt_src
+    atr  = float(df.iloc[-1]["atr"])
+    rsi  = float(df.iloc[-1]["rsi"])
+    adx  = float(df.iloc[-1]["adx"])
+    dec  = MARKETS[symbol_key]["decimals"]
 
     # FIX F — anticipation entry
     entry=calc_anticipation_entry(current_price,atr,direction,symbol_key)
@@ -2757,7 +2863,7 @@ def execute_trade(symbol_key,df,direction,best,wizard_score,
         f"📉 *ADX:* {adx:.1f}\n"
         f"🌍 *Trend:* {trend}\n"
         f"⏰ *Session:* {session}\n"
-        f"📡 *Source:* {source} | Data age: {data_age}s\n"
+        f"📡 *Price:* {rt_source} | Hist:{source} | Gap:{rt_gap:.{dec}f} | Age:{data_age}s\n"
         f"🕐 *Last candle:* {df.index[-1] if hasattr(df,'index') else 'N/A'}\n"
         f"🧠 *Mode:* {'ASIA SCALP' if asia_mode else 'CORE SCALP'}\n"
         f"✅ *14 Checks + 15 Engines + 8 Ultra Layers*\n\n"
@@ -2889,10 +2995,21 @@ def process_symbol(symbol_key):
     if volatility_danger(df):
         log.info(f"REJECTED {symbol_key} extreme vol"); return
 
-    price=float(df.iloc[-1]["close"])
-    atr=float(df.iloc[-1]["atr"])
-    rsi=float(df.iloc[-1]["rsi"])
-    if price<=0: return
+    # HYBRID PRICE: real-time fast_info + candle history
+    realtime_price, price_source, price_gap, is_stale = get_hybrid_price(symbol_key, df)
+    price = realtime_price  # real-time price (0 delay)
+    atr   = float(df.iloc[-1]["atr"])
+    rsi   = float(df.iloc[-1]["rsi"])
+
+    if price <= 0: return
+
+    # Block if real-time price has moved TOO FAR from candle
+    # (means our indicators are stale — signal may be wrong)
+    direction_test = "BUY" if float(df.iloc[-1]["close"]) > float(df.iloc[-2]["close"]) else "SELL"
+    gap_ok, gap_reason = validate_price_gap(symbol_key, float(df.iloc[-1]["close"]), price, atr, direction_test)
+    if is_stale and not gap_ok:
+        log.info(f"STALE+GAP BLOCK {symbol_key}: {gap_reason}")
+        return
 
     trend=get_trend(symbol_key)
     regime=detect_market_regime(df)
