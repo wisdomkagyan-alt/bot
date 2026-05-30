@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 
-SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.7"
+SYSTEM_VERSION = "ULTIMATE-HYBRID-SUPREME-2026-ELITE-v8.7b"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -196,7 +196,7 @@ CORRELATED_GROUPS = [
 DUPLICATE_WINDOWS = {
     "XAU/USD":2700,"XAG/USD":2700,"NAS100":2700,"SPX500":2700,"US30":2700,
     "EUR/USD":2700,"GBP/JPY":2700,"USD/JPY":2700,
-    "BTC/USD":2700,"ETH/USD":2700,
+    "BTC/USD":1800,"ETH/USD":1800,
     "NIFTY50":1800,"BANKNIFTY":1800,"SENSEX":1800,"RELIANCE":1800,"TCS":1800,
 }
 
@@ -211,7 +211,7 @@ BREAKOUT_SESSION_THRESHOLDS = {
 }
 
 # ADAPTIVE 15-ENGINE SETTINGS — TUNED FOR MORE SIGNALS
-ABSOLUTE_MIN_SCORE    = 28    # lowered — more signals
+ABSOLUTE_MIN_SCORE    = 22    # lowered for CHoCH setups
 MIN_ADX_TO_FIRE       = 25    # slightly relaxed
 MIN_WIZARD_SCORE      = 14    # slightly relaxed
 MIN_VOLUME_MULT       = 1.5   # 1.5x average (was 2x)
@@ -629,6 +629,14 @@ def fetch_market_data(symbol_key, for_breakout=False):
             return df.drop_duplicates().reset_index(drop=True),"15M"
         return None,None
     df = fetch_yf(yf_sym,period="2d",interval="1m")  # 2d = fastest load
+    # Also get 15M for CHoCH/BOS structure analysis
+    try:
+        _p15 = "59d" if MARKETS[symbol_key]["market_type"]=="forex" else "5d"
+        df15_struct = fetch_yf(yf_sym, period=_p15, interval="15m")
+        if df15_struct is not None and len(df15_struct)>20:
+            df15_struct = add_ind(df15_struct)
+    except:
+        df15_struct = None
     if df is not None and len(df)>60:
         return df.drop_duplicates().reset_index(drop=True),"1M"
     period = "59d" if symbol_key in ["EUR/USD","GBP/JPY","USD/JPY"] else "30d"
@@ -3055,12 +3063,115 @@ def run_engine_luxalgo(df, symbol_key, direction):
     has_structure = r15.get("bos") or r15.get("vob") or r5.get("bos")
     passed = has_structure and score>=10
 
+    # CHoCH — catches reversals BEFORE BOS
+    choch_ok, choch_sc, choch_desc = choch_plus_ob(df, symbol_key, direction)
+    if choch_ok:
+        score+=choch_sc; details.append(choch_desc)
+    if df15 is not None:
+        choch15_ok, _, choch15_desc = detect_choch(df15, direction)
+        if choch15_ok:
+            score+=5; details.append(f"15M {choch15_desc}")
+    has_choch = choch_ok
+    passed = (has_structure or has_choch) and score>=10
+
     if passed and r15.get("ok") and r5.get("ok"):
         details.append("⚡ 1000% TP CONFIRMED")
+    if passed and has_choch:
+        details.append("🔄 CHoCH REVERSAL CONFIRMED")
 
     desc = " | ".join(details) if details else "No LuxAlgo setup"
-    log.info(f"LUXALGO {symbol_key} {direction}: score={score} 15m={r15.get('ok')} 5m={r5.get('ok')}")
+    log.info(f"LUXALGO {symbol_key} {direction}: score={score} choch={has_choch}")
     return passed, score, f"LUXVOL: {desc}"
+
+
+# ============================================================
+# CHoCH DETECTION — Change of Character
+# First sign of trend reversal (fires BEFORE BOS)
+# LuxAlgo shows CHoCH label on chart — this detects it
+# ============================================================
+
+def detect_choch(df, direction):
+    """
+    CHoCH (Change of Character):
+    In a DOWNTREND: first candle that makes a HIGHER HIGH = CHoCH
+    In an UPTREND:  first candle that makes a LOWER LOW  = CHoCH
+
+    Earlier signal than BOS — catches the reversal at origin.
+    """
+    if len(df)<10: return False, 0, ""
+
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    closes = df["close"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+
+    # Find recent trend direction
+    recent_highs = highs[-15:-2]
+    recent_lows  = lows[-15:-2]
+
+    if len(recent_highs)<3: return False,0,""
+
+    # Was in downtrend (lower highs)
+    was_downtrend = recent_highs[-1] < recent_highs[-3]
+    # Was in uptrend (higher lows)
+    was_uptrend   = recent_lows[-1] > recent_lows[-3]
+
+    price = closes[-1]
+
+    if direction=="BUY" and was_downtrend:
+        # CHoCH UP: price makes higher high in a downtrend
+        last_hh = max(recent_highs[-3:])
+        if highs[-1] > last_hh + atr*0.1:
+            return True, last_hh, f"CHoCH UP @{last_hh:.2f} ✅ (was downtrend)"
+        # Or: price closes above recent swing high
+        if closes[-1] > max(recent_highs[-5:]):
+            return True, closes[-1], f"CHoCH: close above swing high ✅"
+
+    if direction=="SELL" and was_uptrend:
+        # CHoCH DOWN: price makes lower low in an uptrend
+        last_ll = min(recent_lows[-3:])
+        if lows[-1] < last_ll - atr*0.1:
+            return True, last_ll, f"CHoCH DOWN @{last_ll:.2f} ✅ (was uptrend)"
+        if closes[-1] < min(recent_lows[-5:]):
+            return True, closes[-1], f"CHoCH: close below swing low ✅"
+
+    return False, 0, ""
+
+
+def choch_plus_ob(df, direction, symbol_key):
+    """
+    CHoCH + Order Block = highest probability setup.
+    Image 3 shows: CHoCH label + purple OB zone at 73,692.
+    Price bounces from OB after CHoCH = perfect entry.
+    """
+    choch_ok, choch_level, choch_desc = detect_choch(df, direction)
+    if not choch_ok: return False, 0, ""
+
+    # Now check if price is at an OB
+    closes = df["close"].astype(float).values
+    opens  = df["open"].astype(float).values
+    highs  = df["high"].astype(float).values
+    lows   = df["low"].astype(float).values
+    atr    = float(df.iloc[-1]["atr"])
+    price  = closes[-1]
+    dec    = MARKETS[symbol_key]["decimals"]
+
+    for i in range(2, min(15, len(df)-2)):
+        body = abs(closes[i]-opens[i])
+        if body < atr*0.4: continue
+
+        if direction=="BUY" and closes[i]<opens[i]:  # bearish OB
+            ob_hi = highs[i]; ob_lo = lows[i]
+            if ob_lo<=price<=ob_hi:
+                return True, 12, f"{choch_desc} | OB:{ob_lo:.{dec}f}-{ob_hi:.{dec}f} ✅"
+
+        if direction=="SELL" and closes[i]>opens[i]:  # bullish OB
+            ob_hi = highs[i]; ob_lo = lows[i]
+            if ob_lo<=price<=ob_hi:
+                return True, 12, f"{choch_desc} | OB:{ob_lo:.{dec}f}-{ob_hi:.{dec}f} ✅"
+
+    # CHoCH alone still valid
+    return True, 7, choch_desc
 
 # ============================================================
 # ADAPTIVE THRESHOLD ENGINE
