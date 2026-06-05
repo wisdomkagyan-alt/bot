@@ -1,4 +1,4 @@
-============================================================
+
 # PEPPERSTONE + INDIA MOMENTUM HUNTER
 # ULTIMATE-HYBRID-SUPREME-2026-ELITE — BOX BREAKOUT EDITION
 # XAU/USD + NAS100 + SPX500 + EUR/USD + GBP/JPY
