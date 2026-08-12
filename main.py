@@ -1,935 +1,1923 @@
-#!/usr/bin/env python3
 # ============================================================
-# TOPG 6-STEP REVERSAL STRATEGY - COMPLETE BOT
-# v1.0 | Production-Ready | All-In-One Implementation
+# PEPPERSTONE PRICE ACTION HUNTER
+# PA-SUPREME-2026 — SCALPER EDITION
 #
-# This single file contains everything needed to:
-# 1. Detect reversal setups using the 6-step method
-# 2. Fetch live market data (Yahoo Finance)
-# 3. Run continuous monitoring
-# 4. Send signals to Telegram
-# 5. Log all trades for backtesting
+# 1H  = LOCATION / MARKET STRUCTURE
+# 15M = LIQUIDITY SWEEP + BOS / CHOCH
+# 5M  = RETEST / ENTRY TRIGGER
 #
-# SETUP (3 steps):
-# 1. pip install pandas numpy ta yfinance requests
-# 2. Get Telegram bot token from @BotFather
-# 3. Edit TELEGRAM_TOKEN and TELEGRAM_CHAT_ID below
-# 4. Run: python TOPG_COMPLETE_BOT.py
+# SETUPS:
+#   1) LIQUIDITY REVERSAL
+#   2) CONFIRMED BREAKOUT / RETEST
 #
+# Indicators removed from the decision engine:
+#   EMA / RSI / ADX / VWAP / WaveTrend / AOX / Wizard AI
+#
+# ATR is used ONLY for an SL buffer.
+#
+# IMPORTANT:
+#   This script generates Telegram trade alerts. It does not
+#   place broker orders.
 # ============================================================
 
-import logging
-import requests
-import pandas as pd
-import numpy as np
-import ta
-import yfinance as yf
-import os
 import csv
+import gc
+import logging
+import math
+import os
 import time
 from datetime import datetime, timezone
+from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pandas as pd
+import requests
+import yfinance as yf
+
+SYSTEM_VERSION = "PA-SUPREME-2026-SCALPER"
+
 # ============================================================
-# LOGGING SETUP
+# SECURITY
+# ============================================================
+# Set these as environment variables:
+#   TOKEN="your_new_bot_token"
+#   CHAT_ID="your_chat_id"
+#
+# DO NOT hard-code the Telegram bot token.
+TOKEN = os.getenv("TOKEN", "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU")
+CHAT_ID = os.getenv("CHAT_ID", "8783763018")
+
+# ============================================================
+# LOGGING
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('topg_bot.log')
-    ]
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.StreamHandler()],
 )
-log = logging.getLogger("TOPG_6STEP_BOT")
+log = logging.getLogger("PA-SUPREME-2026")
+
+http = requests.Session()
+signal_lock = Lock()
+log_lock = Lock()
 
 # ============================================================
-# TELEGRAM CONFIGURATION - EDIT THESE
+# PRIORITY MARKETS
 # ============================================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8783763018")
+PRIORITY_MARKETS = [
+    "XAU/USD", "NAS100", "SPX500", "EUR/USD", "GBP/JPY",
+    "NIFTY50", "BANKNIFTY", "SENSEX", "RELIANCE", "TCS",
+]
 
 # ============================================================
-# MARKET CONFIGURATION
+# MARKET DATA
 # ============================================================
 MARKETS = {
     "XAU/USD": {
-        "yf_symbol": "GC=F",
-        "mt5_name": "XAUUSD",
-        "interval": "5m",
-        "session_hours": (7, 20),
-        "active_sessions": ["London", "NY Killzone"],
+        "data": "GC=F",
+        "execution": "XAUUSD.Qraw",
         "decimals": 2,
-        "impulse_threshold": 100.0,
-        "min_impulse_bars": 20,
-        "sweep_lookback": 6,
-        "order_block_range": 10,
-        "min_rr": 2.0,
+        "market_type": "global",
+        "min_sl": 1.50,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["Asian Precision", "London", "NY+London", "NY Killzone"],
     },
     "NAS100": {
-        "yf_symbol": "^NDX",
-        "mt5_name": "NAS100",
-        "interval": "5m",
-        "session_hours": (13, 21),
-        "active_sessions": ["London", "NY Killzone"],
+        "data": "^NDX",
+        "execution": "NAS100",
         "decimals": 1,
-        "impulse_threshold": 350.0,
-        "min_impulse_bars": 20,
-        "sweep_lookback": 8,
-        "order_block_range": 12,
-        "min_rr": 2.0,
+        "market_type": "global",
+        "min_sl": 12.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["London", "NY+London", "NY Killzone"],
     },
-    "DE30": {
-        "yf_symbol": "^GDAXI",
-        "mt5_name": "DE30",
-        "interval": "5m",
-        "session_hours": (7, 18),
-        "active_sessions": ["London"],
+    "SPX500": {
+        "data": "^GSPC",
+        "execution": "SPX500",
         "decimals": 1,
-        "impulse_threshold": 300.0,
-        "min_impulse_bars": 20,
-        "sweep_lookback": 7,
-        "order_block_range": 14,
-        "min_rr": 2.0,
+        "market_type": "global",
+        "min_sl": 6.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["London", "NY+London", "NY Killzone"],
     },
-    "US30": {
-        "yf_symbol": "^DJI",
-        "mt5_name": "US30",
-        "interval": "5m",
-        "session_hours": (13, 21),
-        "active_sessions": ["NY Killzone"],
-        "decimals": 1,
-        "impulse_threshold": 650.0,
-        "min_impulse_bars": 20,
-        "sweep_lookback": 8,
-        "order_block_range": 12,
-        "min_rr": 2.0,
+    "EUR/USD": {
+        "data": "EURUSD=X",
+        "execution": "EURUSD",
+        "decimals": 5,
+        "market_type": "global",
+        "min_sl": 0.00025,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["Asian Precision", "London", "NY+London", "NY Killzone"],
+    },
+    "GBP/JPY": {
+        "data": "GBPJPY=X",
+        "execution": "GBPJPY",
+        "decimals": 3,
+        "market_type": "global",
+        "min_sl": 0.040,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["Asian Precision", "London", "NY+London", "NY Killzone"],
+    },
+
+    "NIFTY50": {
+        "data": "^NSEI",
+        "execution": "NIFTY50",
+        "decimals": 2,
+        "market_type": "india",
+        "min_sl": 15.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["India Open", "India Midday", "India Close"],
+    },
+    "BANKNIFTY": {
+        "data": "^NSEBANK",
+        "execution": "BANKNIFTY",
+        "decimals": 2,
+        "market_type": "india",
+        "min_sl": 20.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["India Open", "India Midday", "India Close"],
+    },
+    "SENSEX": {
+        "data": "^BSESN",
+        "execution": "SENSEX",
+        "decimals": 2,
+        "market_type": "india",
+        "min_sl": 40.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["India Open", "India Midday", "India Close"],
+    },
+    "RELIANCE": {
+        "data": "RELIANCE.NS",
+        "execution": "RELIANCE",
+        "decimals": 2,
+        "market_type": "india",
+        "min_sl": 5.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["India Open", "India Midday", "India Close"],
+    },
+    "TCS": {
+        "data": "TCS.NS",
+        "execution": "TCS",
+        "decimals": 2,
+        "market_type": "india",
+        "min_sl": 8.0,
+        "sl_buffer": 0.10,
+        "rr": 2.00,
+        "daily_cap": 2,
+        "sessions": ["India Open", "India Midday", "India Close"],
     },
 }
 
 # ============================================================
-# GLOBAL STATE
+# RISK / EXECUTION
 # ============================================================
-_data_cache = {}
-_last_signal = {}
-data_cache_duration = 50  # seconds
+RISK_PER_TRADE = 50.0
 
-# ============================================================
-# PART 1: CORE 6-STEP STRATEGY ENGINE
-# ============================================================
+DOLLAR_PER_POINT = {
+    "XAU/USD": 100,
+    "NAS100": 10,
+    "SPX500": 10,
+    "EUR/USD": 100000,
+    "GBP/JPY": 1000,
+    "NIFTY50": 50,
+    "BANKNIFTY": 20,
+    "SENSEX": 10,
+    "RELIANCE": 1,
+    "TCS": 1,
+}
 
-def identify_bos(df, direction="BULL"):
-    """
-    STEP 1: Identify Break of Structure
-    
-    BOS = price breaks previous swing high (BULL) or swing low (BEAR)
-    This confirms institutional momentum in the reversal direction.
-    
-    Returns: (bos_exists, bos_price, swing_high, swing_low)
-    """
-    if len(df) < 10:
-        return False, None, None, None
-    
-    recent = df.tail(20)
-    highs = recent["high"].astype(float).values
-    lows = recent["low"].astype(float).values
-    
-    prev_high = highs[-5:-1].max()
-    prev_low = lows[-5:-1].min()
-    current_close = float(df.iloc[-1]["close"])
-    
-    if direction == "BULL":
-        # Bullish BOS: close breaks below previous low (bearish impulse)
-        bos_confirmed = current_close < prev_low
-        return bos_confirmed, float(current_close), float(prev_high), float(prev_low)
-    else:  # BEAR
-        # Bearish BOS: close breaks above previous high (bullish impulse)
-        bos_confirmed = current_close > prev_high
-        return bos_confirmed, float(current_close), float(prev_high), float(prev_low)
+LOT_CAP = {
+    "XAU/USD": 1.50,
+    "NAS100": 2.00,
+    "SPX500": 2.00,
+    "EUR/USD": 3.00,
+    "GBP/JPY": 2.00,
+    "NIFTY50": 50.0,
+    "BANKNIFTY": 50.0,
+    "SENSEX": 50.0,
+    "RELIANCE": 500.0,
+    "TCS": 500.0,
+}
 
+EXECUTION_BUFFER = {
+    "XAU/USD": 0.15,
+    "NAS100": 1.50,
+    "SPX500": 1.00,
+    "EUR/USD": 0.00005,
+    "GBP/JPY": 0.010,
+    "NIFTY50": 1.00,
+    "BANKNIFTY": 2.00,
+    "SENSEX": 3.00,
+    "RELIANCE": 0.50,
+    "TCS": 0.50,
+}
 
-def detect_choch(df, direction="BULL"):
-    """
-    STEP 2: Detect Change of Character (ChoCH)
-    
-    ChoCH = first candle closing in opposite direction of prevailing trend
-    This is the earliest signal that institutional reversal is happening.
-    
-    Returns: (choch_exists, choch_bar_index, reversal_candle)
-    """
-    if len(df) < 5:
-        return False, None, None
-    
-    recent = df.tail(10).reset_index(drop=True)
-    
-    if direction == "BULL":
-        # Bullish reversal ChoCH: after bearish moves, first bullish close
-        for i in range(len(recent) - 1, 0, -1):
-            prev_lows = recent.iloc[:i]["low"].astype(float).values
-            prev_low = prev_lows.min()
-            curr_close = float(recent.iloc[i]["close"])
-            curr_open = float(recent.iloc[i]["open"])
-            
-            if curr_close > curr_open and curr_close > prev_low * 1.001:
-                return True, i, recent.iloc[i]
-    else:  # BEAR
-        # Bearish reversal ChoCH: after bullish moves, first bearish close
-        for i in range(len(recent) - 1, 0, -1):
-            prev_highs = recent.iloc[:i]["high"].astype(float).values
-            prev_high = prev_highs.max()
-            curr_close = float(recent.iloc[i]["close"])
-            curr_open = float(recent.iloc[i]["open"])
-            
-            if curr_close < curr_open and curr_close < prev_high * 0.999:
-                return True, i, recent.iloc[i]
-    
-    return False, None, None
-
-
-def mark_order_block(df, direction="BULL", lookback=15):
-    """
-    STEP 3: Mark Order Block
-    
-    Order Block = the last opposing candle before the impulse move
-    This is where institutional traders placed their orders.
-    Price returns to this zone for entry confirmation.
-    
-    Returns: (ob_price, ob_high, ob_low, ob_index)
-    """
-    if len(df) < lookback:
-        return None, None, None, None
-    
-    recent = df.tail(lookback).reset_index(drop=True)
-    
-    if direction == "BULL":
-        # After bearish impulse, find the strong bearish candle
-        for i in range(len(recent) - 2, 0, -1):
-            candle = recent.iloc[i]
-            open_p = float(candle["open"])
-            close_p = float(candle["close"])
-            
-            if close_p < open_p:  # Bearish candle
-                ob_high = float(candle["high"])
-                ob_low = float(candle["low"])
-                ob_price = (ob_high + ob_low) / 2
-                return ob_price, ob_high, ob_low, i
-    else:  # BEAR
-        # After bullish impulse, find the strong bullish candle
-        for i in range(len(recent) - 2, 0, -1):
-            candle = recent.iloc[i]
-            open_p = float(candle["open"])
-            close_p = float(candle["close"])
-            
-            if close_p > open_p:  # Bullish candle
-                ob_high = float(candle["high"])
-                ob_low = float(candle["low"])
-                ob_price = (ob_high + ob_low) / 2
-                return ob_price, ob_high, ob_low, i
-    
-    return None, None, None, None
-
-
-def detect_liquidity_sweep(df, direction="BULL", lookback=6):
-    """
-    STEP 4: Detect Liquidity Sweep (BONUS - not required)
-    
-    Sweep = price touches/breaks previous swing level, then reverses
-    Shows institutional traders hunting retail stop-losses.
-    Increases probability when present.
-    
-    Returns: (sweep_detected, sweep_price, sweep_index, reversal_close)
-    """
-    if len(df) < lookback + 2:
-        return False, None, None, None
-    
-    recent = df.tail(lookback + 2).reset_index(drop=True)
-    
-    if direction == "BULL":
-        # Bullish sweep: price touches below previous low, then closes above
-        prev_lows = recent.iloc[:-2]["low"].astype(float).values
-        prev_low = prev_lows.min()
-        
-        current_low = float(recent.iloc[-1]["low"])
-        current_close = float(recent.iloc[-1]["close"])
-        
-        if current_low < prev_low and current_close > prev_low:
-            return True, float(prev_low), len(recent) - 1, current_close
-    else:  # BEAR
-        # Bearish sweep: price touches above previous high, then closes below
-        prev_highs = recent.iloc[:-2]["high"].astype(float).values
-        prev_high = prev_highs.max()
-        
-        current_high = float(recent.iloc[-1]["high"])
-        current_close = float(recent.iloc[-1]["close"])
-        
-        if current_high > prev_high and current_close < prev_high:
-            return True, float(prev_high), len(recent) - 1, current_close
-    
-    return False, None, None, None
-
-
-def detect_impulse_move(df, symbol_key, direction="BULL"):
-    """
-    Helper: Detect if there was an impulsive directional move
-    This precedes the reversal and validates the setup.
-    
-    Returns: (impulse_exists, move_size)
-    """
-    config = MARKETS[symbol_key]
-    lookback = config["min_impulse_bars"]
-    threshold = config["impulse_threshold"]
-    
-    if len(df) < lookback:
-        return False, 0.0
-    
-    window = df.tail(lookback)
-    window_high = float(window["high"].max())
-    window_low = float(window["low"].min())
-    high_pos = int(window["high"].values.argmax())
-    low_pos = int(window["low"].values.argmin())
-    move = window_high - window_low
-    
-    if direction == "BULL":
-        # Bullish reversal after bearish impulse (low comes first)
-        impulse_ok = bool(low_pos < high_pos and move >= threshold)
-    else:  # BEAR
-        # Bearish reversal after bullish impulse (high comes first)
-        impulse_ok = bool(high_pos < low_pos and move >= threshold)
-    
-    return impulse_ok, move
-
-
-def confirm_entry(df, ob_price, ob_high, ob_low, direction="BULL"):
-    """
-    STEP 5: Confirm Entry at Order Block
-    
-    Entry confirmation when:
-    1. Price retests Order Block zone
-    2. AND engulfing candle OR rejection wick OR displacement candle
-    3. AND closes in reversal direction
-    
-    Returns: (entry_confirmed, entry_price, entry_candle)
-    """
-    if len(df) < 2:
-        return False, None, None
-    
-    current = df.iloc[-1]
-    previous = df.iloc[-2]
-    
-    curr_open = float(current["open"])
-    curr_close = float(current["close"])
-    curr_high = float(current["high"])
-    curr_low = float(current["low"])
-    
-    prev_open = float(previous["open"])
-    prev_close = float(previous["close"])
-    
-    body = abs(curr_close - curr_open)
-    upper_wick = curr_high - max(curr_close, curr_open)
-    lower_wick = min(curr_close, curr_open) - curr_low
-    
-    if direction == "BULL":
-        # Bullish confirmation
-        in_ob_zone = (curr_low <= ob_high and curr_low >= ob_low * 0.995)
-        engulfing = (curr_open <= prev_close and curr_close > prev_open)
-        rejection_wick = (lower_wick > body * 1.5 and curr_close > curr_open)
-        displacement = (body > float(current.get("atr", body)) * 1.2)
-        
-        confirmed = in_ob_zone and (engulfing or rejection_wick or displacement)
-        entry_price = curr_close if confirmed else None
-        
-        return confirmed, entry_price, current
-    else:  # BEAR
-        # Bearish confirmation
-        in_ob_zone = (curr_high >= ob_low and curr_high <= ob_high * 1.005)
-        engulfing = (curr_open >= prev_close and curr_close < prev_open)
-        rejection_wick = (upper_wick > body * 1.5 and curr_close < curr_open)
-        displacement = (body > float(current.get("atr", body)) * 1.2)
-        
-        confirmed = in_ob_zone and (engulfing or rejection_wick or displacement)
-        entry_price = curr_close if confirmed else None
-        
-        return confirmed, entry_price, current
-
-
-def calculate_sl_and_tp(entry_price, ob_high, ob_low, direction="BULL", min_rr=2.0):
-    """
-    STEP 6: Calculate Stop Loss and Take Profit
-    
-    SL = placed BEYOND the Order Block (invalidation level)
-    TP = calculated for risk/reward ratio
-    
-    Returns: (sl_price, tp_price, risk_distance, rr_ratio)
-    """
-    if direction == "BULL":
-        # Buy trade: SL below OB
-        buffer = entry_price * 0.005  # 0.5% buffer
-        sl = ob_low - buffer
-        risk_dist = entry_price - sl
-        tp = entry_price + (risk_dist * min_rr)
-        rr = (tp - entry_price) / risk_dist if risk_dist != 0 else 0
-        
-        return round(sl, 2), round(tp, 2), round(risk_dist, 2), round(rr, 2)
-    else:  # BEAR
-        # Sell trade: SL above OB
-        buffer = entry_price * 0.005
-        sl = ob_high + buffer
-        risk_dist = sl - entry_price
-        tp = entry_price - (risk_dist * min_rr)
-        rr = (entry_price - tp) / risk_dist if risk_dist != 0 else 0
-        
-        return round(sl, 2), round(tp, 2), round(risk_dist, 2), round(rr, 2)
-
-
-def build_6step_checklist(df, symbol_key, direction="BULL"):
-    """
-    Combine all 6 steps into a complete checklist
-    
-    Returns: (checklist_dict, all_passed, signal_object)
-    """
-    config = MARKETS[symbol_key]
-    
-    # Step 1: BOS
-    bos_ok, bos_price, swing_high, swing_low = identify_bos(df, direction)
-    
-    # Step 2: ChoCH
-    choch_ok, choch_idx, choch_candle = detect_choch(df, direction)
-    
-    # Step 3: Order Block
-    ob_price, ob_high, ob_low, ob_idx = mark_order_block(df, direction)
-    ob_ok = ob_price is not None
-    
-    # Step 4: Liquidity Sweep (BONUS - not required)
-    sweep_ok, sweep_price, sweep_idx, sweep_close = detect_liquidity_sweep(df, direction)
-    
-    # Step 5: Entry Confirmation
-    entry_ok, entry_price, entry_candle = confirm_entry(df, ob_price, ob_high, ob_low, direction) if ob_ok else (False, None, None)
-    
-    # Build checklist
-    checklist = {
-        "step_1_bos": bos_ok,
-        "step_2_choch": choch_ok,
-        "step_3_order_block": ob_ok,
-        "step_4_sweep": sweep_ok,
-        "step_5_entry": entry_ok,
-    }
-    
-    # All 6 steps must be true (sweep is bonus)
-    # Actually: 1,2,3,5,6 must be true. 4 is bonus.
-    all_passed = bos_ok and choch_ok and ob_ok and entry_ok
-    
-    if all_passed:
-        # Step 6: SL & TP
-        sl, tp, risk_dist, rr = calculate_sl_and_tp(entry_price, ob_high, ob_low, direction, config["min_rr"])
-        
-        if rr < config["min_rr"]:
-            all_passed = False
-        else:
-            signal = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "symbol": symbol_key,
-                "direction": direction,
-                "status": "READY",
-                "checklist": checklist,
-                "sweep_detected": sweep_ok,
-                "entry_price": entry_price,
-                "stop_loss": sl,
-                "take_profit": tp,
-                "risk_distance": risk_dist,
-                "risk_reward_ratio": rr,
-                "ready_to_execute": True,
-            }
-            return checklist, all_passed, signal
-    
-    return checklist, all_passed, None
-
+MAX_DAILY_LOSS = -300.0
+MAX_CONSECUTIVE_LOSSES = 3
 
 # ============================================================
-# PART 2: DATA FETCHING
+# PRICE ACTION SETTINGS
 # ============================================================
+SWING_LEFT = 2
+SWING_RIGHT = 2
 
-def fetch_market_data(symbol_key, force_refresh=False):
-    """
-    Fetch OHLCV data from Yahoo Finance with caching
-    """
-    cache_key = symbol_key
-    current_time = time.time()
-    
-    if cache_key in _data_cache and not force_refresh:
-        cached_df, cached_ts = _data_cache[cache_key]
-        if current_time - cached_ts < data_cache_duration:
-            return cached_df
-    
-    try:
-        yf_symbol = MARKETS[symbol_key]["yf_symbol"]
-        interval = MARKETS[symbol_key]["interval"]
-        
-        df = yf.download(
-            yf_symbol,
-            period="15d",
-            interval=interval,
-            progress=False,
-            auto_adjust=True
-        )
-        
-        if df.empty:
-            log.error(f"❌ No data received for {symbol_key}")
-            return None
-        
-        # Normalize columns
-        df.columns = [c.lower() for c in df.columns]
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        
-        df = df[["open", "high", "low", "close", "volume"]].reset_index(drop=True)
-        
-        # Add ATR
-        df["atr"] = ta.volatility.AverageTrueRange(
-            df["high"], df["low"], df["close"], 14
-        ).average_true_range()
-        
-        # Cache it
-        _data_cache[cache_key] = (df, current_time)
-        
-        log.info(f"✅ Data loaded: {symbol_key} | {len(df)} candles")
-        return df
-    
-    except Exception as e:
-        log.error(f"❌ Data fetch error for {symbol_key}: {e}")
-        return None
+ZONE_LOOKBACK_1H = 80
+ZONE_LOOKBACK_15M = 60
 
+LIQUIDITY_LOOKBACK = 8
+BOS_LOOKBACK = 5
+
+REJECTION_WICK_RATIO = 1.30
+DISPLACEMENT_BODY_MULT = 1.20
+
+ZONE_TOLERANCE_ATR = 0.35
+RETEST_TOLERANCE_ATR = 0.25
+
+MIN_PA_SCORE = 8
+MIN_RR = 1.80
+
+# Only one scalp/reversal signal per symbol per session.
+SIGNAL_ONE_PER_SESSION = True
+
+# Separate cooldown for breakout/reversal alerts.
+SIGNAL_COOLDOWN = 900
+
+# Correlated instruments: maximum one signal in a group
+# during the correlation window.
+CORRELATION_BLOCK = True
+MAX_CORRELATED_SIGNALS = 1
+CORRELATION_WINDOW = 1800
+
+CORRELATED_GROUPS = [
+    ["NAS100", "SPX500"],
+    ["EUR/USD", "GBP/JPY"],
+    ["NIFTY50", "BANKNIFTY", "SENSEX"],
+    ["RELIANCE", "TCS"],
+]
 
 # ============================================================
-# PART 3: SESSION FILTERING
+# LOOP SETTINGS
 # ============================================================
+# Yahoo Finance is not a broker-grade real-time feed.
+# 30 seconds is intentionally used instead of hammering
+# the API every second.
+SCAN_INTERVAL = 30
 
-def is_active_session(symbol_key):
-    """
-    Check if current UTC time is in active trading session
-    """
-    start_hour, end_hour = MARKETS[symbol_key]["session_hours"]
-    current_hour = datetime.now(timezone.utc).hour
-    
-    if not (start_hour <= current_hour < end_hour):
-        return False, "Market Closed"
-    
-    # Map hour to session name
-    if 7 <= current_hour < 12:
-        session = "London"
-    elif 13 <= current_hour < 15:
-        session = "NY Killzone"
-    elif 12 <= current_hour < 16:
-        session = "NY+London"
+# ============================================================
+# STATE
+# ============================================================
+daily_pnl = 0.0
+consecutive_losses = 0
+last_reset_date = datetime.now(timezone.utc).date()
+
+daily_signal_count = {s: 0 for s in PRIORITY_MARKETS}
+session_signal_count = {
+    s: {"session": None, "count": 0} for s in PRIORITY_MARKETS
+}
+last_signal_time = {}
+last_signal_direction = {}
+last_signal_type = {}
+
+# ============================================================
+# FILES
+# ============================================================
+for filename in ("signals_log.csv", "signals_backup.csv"):
+    if not os.path.exists(filename):
+        with open(filename, "a", encoding="utf-8"):
+            pass
+
+# ============================================================
+# DAILY STATE
+# ============================================================
+def reset_daily():
+    global daily_pnl, consecutive_losses, last_reset_date
+    today = datetime.now(timezone.utc).date()
+
+    if today != last_reset_date:
+        daily_pnl = 0.0
+        consecutive_losses = 0
+        last_reset_date = today
+
+        for symbol in PRIORITY_MARKETS:
+            daily_signal_count[symbol] = 0
+            session_signal_count[symbol] = {"session": None, "count": 0}
+
+        log.info("Daily state reset complete")
+
+
+def update_trade_result(pnl):
+    global daily_pnl, consecutive_losses
+
+    daily_pnl += float(pnl)
+
+    if pnl < 0:
+        consecutive_losses += 1
     else:
-        session = "Asian"
-    
-    active_sessions = MARKETS[symbol_key]["active_sessions"]
-    
-    if session in active_sessions:
-        return True, session
-    else:
-        return False, session
+        consecutive_losses = 0
 
 
-# ============================================================
-# PART 4: DUPLICATE SIGNAL PREVENTION
-# ============================================================
+def daily_loss_lock():
+    return daily_pnl <= MAX_DAILY_LOSS
 
-def is_duplicate_signal(symbol_key, direction, cooldown_seconds=3600):
-    """
-    Prevent sending same signal twice within cooldown period
-    """
-    key = f"{symbol_key}_{direction}"
-    current_time = time.time()
-    
-    if key in _last_signal:
-        last_time = _last_signal[key]
-        if current_time - last_time < cooldown_seconds:
-            remaining = int(cooldown_seconds - (current_time - last_time))
-            log.info(f"⏱️  Duplicate blocked: {key} ({remaining}s cooldown)")
-            return True
-    
-    _last_signal[key] = current_time
-    return False
 
+def loss_streak_lock():
+    return consecutive_losses >= MAX_CONSECUTIVE_LOSSES
 
 # ============================================================
-# PART 5: TELEGRAM INTEGRATION
+# TELEGRAM
 # ============================================================
+def send_telegram(message):
+    if not TOKEN or not CHAT_ID:
+        log.warning("Telegram disabled: TOKEN or CHAT_ID missing")
+        return False
 
-def send_telegram(message_text, retry_count=3):
-    """
-    Send message to Telegram with retry logic
-    """
-    for attempt in range(retry_count):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+    for attempt in range(3):
         try:
-            response = requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            response = http.post(
+                url,
                 json={
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": message_text,
-                    "parse_mode": "Markdown"
+                    "chat_id": CHAT_ID,
+                    "text": message,
+                    "parse_mode": "Markdown",
                 },
-                timeout=10
+                timeout=10,
             )
-            
+
             if response.status_code == 200:
-                log.info("✅ Telegram sent")
                 return True
-            else:
-                log.error(f"❌ Telegram error {response.status_code}")
-                if attempt < retry_count - 1:
-                    time.sleep(2)
-        
-        except Exception as e:
-            log.error(f"❌ Telegram send error: {e}")
-            if attempt < retry_count - 1:
-                time.sleep(2)
-    
+
+            log.error(
+                "Telegram HTTP %s: %s",
+                response.status_code,
+                response.text[:300],
+            )
+
+        except Exception as exc:
+            log.error("Telegram attempt %s failed: %s", attempt + 1, exc)
+
+        time.sleep(2)
+
     return False
 
-
-def format_signal_message(signal, symbol_key):
-    """
-    Convert signal object to formatted Telegram message
-    """
-    direction = signal["direction"]
-    emoji = "📈" if direction == "BULL" else "📉"
-    
-    checklist_items = [
-        ("BOS", signal["checklist"]["step_1_bos"]),
-        ("ChoCH", signal["checklist"]["step_2_choch"]),
-        ("Order Block", signal["checklist"]["step_3_order_block"]),
-        ("Sweep", signal["checklist"]["step_4_sweep"]),
-        ("Entry", signal["checklist"]["step_5_entry"]),
-    ]
-    
-    checklist_text = "\n".join([f"  {'✅' if v else '❌'} {k}" for k, v in checklist_items])
-    
-    config = MARKETS[symbol_key]
-    decimals = config["decimals"]
-    
-    message = f"""
-🎯 *TOPG 6-STEP REVERSAL SIGNAL*
-
-*{symbol_key}* | {emoji} *{direction}*
-⭐⭐⭐⭐⭐ HIGH PROBABILITY
-
-*📍 Entry:* `{signal['entry_price']:.{decimals}f}`
-*🛑 SL:* `{signal['stop_loss']:.{decimals}f}`
-*🎯 TP:* `{signal['take_profit']:.{decimals}f}`
-
-*📊 Risk/Reward:*
-• Risk: `{signal['risk_distance']:.{decimals}f}`
-• Reward: `{signal['risk_distance'] * signal['risk_reward_ratio']:.{decimals}f}`
-• Ratio: `1:{signal['risk_reward_ratio']:.1f}`
-
-*✅ 6-Step Checklist:*
-{checklist_text}
-
-*Signal Type:* Counter-Trend Reversal
-*Timeframe:* 5M Entry / HTF Structure
-*Status:* 🟢 READY TO EXECUTE
-
-⚡ *Risk Management:*
-  • SL = Below OB Structure
-  • Exit if price closes SL
-  • Move to +1R after entry
-  • Trail stop above OB
-
-📊 *Setup:* {'with' if signal['sweep_detected'] else 'without'} Liquidity Sweep
-
-🔗 *Timestamp:* {signal['timestamp']}
-"""
-    
-    return message
-
-
 # ============================================================
-# PART 6: SIGNAL LOGGING
+# WATCHDOG
 # ============================================================
-
-def log_signal_to_csv(signal, symbol_key):
-    """
-    Log signal to CSV for performance tracking
-    """
-    filename = "signals_log.csv"
-    file_exists = os.path.isfile(filename)
-    
+def watchdog():
     try:
-        with open(filename, "a", newline="") as f:
-            writer = csv.writer(f)
-            
-            if not file_exists:
-                writer.writerow([
-                    "timestamp", "symbol", "direction", "entry",
-                    "stop_loss", "take_profit", "rr_ratio",
-                    "step_1_bos", "step_2_choch", "step_3_ob",
-                    "step_4_sweep", "step_5_entry"
-                ])
-            
-            writer.writerow([
-                signal["timestamp"],
-                symbol_key,
-                signal["direction"],
-                signal["entry_price"],
-                signal["stop_loss"],
-                signal["take_profit"],
-                signal["risk_reward_ratio"],
-                signal["checklist"]["step_1_bos"],
-                signal["checklist"]["step_2_choch"],
-                signal["checklist"]["step_3_order_block"],
-                signal["checklist"]["step_4_sweep"],
-                signal["checklist"]["step_5_entry"],
-            ])
-            
-            log.info(f"📝 Signal logged to CSV")
-    
-    except Exception as e:
-        log.error(f"❌ CSV logging error: {e}")
-
+        with open("heartbeat.txt", "w", encoding="utf-8") as f:
+            f.write(
+                f"{datetime.now(timezone.utc).isoformat()} | "
+                f"{SYSTEM_VERSION} | ACTIVE"
+            )
+    except Exception as exc:
+        log.error("Watchdog failure: %s", exc)
 
 # ============================================================
-# PART 7: MAIN SIGNAL PROCESSING
+# SESSION ENGINE
 # ============================================================
+def in_session(symbol):
+    now = datetime.now(timezone.utc)
+    hm = now.hour * 60 + now.minute
 
-def process_symbol(symbol_key, test_direction=None):
-    """
-    Main entry point: process a single symbol
-    """
-    log.info(f"\n{'='*70}")
-    log.info(f"Processing {symbol_key}")
-    log.info(f"{'='*70}")
-    
-    # Session check
-    active, session = is_active_session(symbol_key)
-    if not active:
-        log.info(f"⏰ Outside active session ({session})")
-        return None
-    
-    log.info(f"✅ Active session: {session}")
-    
-    # Fetch data
-    df = fetch_market_data(symbol_key)
-    if df is None or len(df) < 100:
-        log.error(f"❌ Insufficient data")
-        return None
-    
-    # Process both directions
-    directions_to_check = [test_direction] if test_direction else ["BULL", "BEAR"]
-    
-    for direction in directions_to_check:
-        log.info(f"\nChecking {direction} setup...")
-        
-        # Duplicate filter
-        if is_duplicate_signal(symbol_key, direction):
-            continue
-        
-        # Run 6-step check
-        checklist, all_passed, signal = build_6step_checklist(df, symbol_key, direction)
-        
-        checklist_score = sum(checklist.values())
-        log.info(f"Checklist: {checklist_score}/5 items passed")
-        
-        for step, passed in checklist.items():
-            status = "✅" if passed else "❌"
-            log.info(f"  {status} {step}")
-        
-        if all_passed and signal:
-            log.info(f"\n{'='*70}")
-            log.info(f"🎯 SIGNAL READY: {symbol_key} {direction}")
-            log.info(f"{'='*70}")
-            
-            # Send Telegram
-            message = format_signal_message(signal, symbol_key)
-            sent = send_telegram(message)
-            
-            if sent:
-                # Log to CSV
-                log_signal_to_csv(signal, symbol_key)
-            
-            return signal
-    
+    if MARKETS[symbol]["market_type"] == "india":
+        if 225 <= hm < 330:
+            return True, "India Open"
+        if 330 <= hm < 450:
+            return True, "India Midday"
+        if 450 <= hm < 600:
+            return True, "India Close"
+        return False, "Closed"
+
+    # UTC global sessions.
+    if 60 <= hm < 360:
+        return True, "Asian Precision"
+    if 480 <= hm < 660:
+        return True, "London"
+    if 780 <= hm < 840:
+        return True, "NY Killzone"
+    if 840 <= hm < 960:
+        return True, "NY+London"
+
+    return False, "Closed"
+
+
+def weekend_block():
+    now = datetime.now(timezone.utc)
+
+    if now.weekday() == 5:
+        return True
+
+    if now.weekday() == 6 and now.hour < 21:
+        return True
+
+    return False
+
+# ============================================================
+# DATA FETCH
+# ============================================================
+def fetch_yf(ticker, period, interval):
+    for attempt in range(3):
+        try:
+            raw = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False,
+                auto_adjust=False,
+                threads=False,
+            )
+
+            if raw is None or raw.empty:
+                time.sleep(1)
+                continue
+
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.get_level_values(0)
+
+            raw.columns = [str(c).lower() for c in raw.columns]
+
+            required = ["open", "high", "low", "close"]
+            if any(c not in raw.columns for c in required):
+                return None
+
+            if "volume" not in raw.columns:
+                raw["volume"] = 0
+
+            df = raw[
+                ["open", "high", "low", "close", "volume"]
+            ].copy()
+
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df = df.replace([math.inf, -math.inf], pd.NA)
+            df = df.dropna(subset=["open", "high", "low", "close"])
+            df = df.drop_duplicates()
+
+            if df.empty:
+                return None
+
+            return df.reset_index(drop=True)
+
+        except Exception as exc:
+            log.error(
+                "Yahoo fetch failed %s %s attempt %s: %s",
+                ticker,
+                interval,
+                attempt + 1,
+                exc,
+            )
+            time.sleep(1)
+
     return None
 
 
-# ============================================================
-# PART 8: MAIN LOOP
-# ============================================================
+def fetch_timeframes(symbol):
+    ticker = MARKETS[symbol]["data"]
 
-def main_loop(scan_interval=5, max_workers=4):
+    # Current intraday data:
+    # 5M -> entry trigger
+    # 15M -> setup
+    # 1H -> location
+    df_5m = fetch_yf(ticker, "60d", "5m")
+    df_15m = fetch_yf(ticker, "60d", "15m")
+    df_1h = fetch_yf(ticker, "60d", "1h")
+
+    if any(x is None or len(x) < 50 for x in [df_5m, df_15m, df_1h]):
+        return None
+
+    return {
+        "5M": df_5m,
+        "15M": df_15m,
+        "1H": df_1h,
+    }
+
+# ============================================================
+# BASIC PRICE-ACTION HELPERS
+# ============================================================
+def candle_body(c):
+    return abs(float(c["close"]) - float(c["open"]))
+
+
+def candle_range(c):
+    return max(0.0, float(c["high"]) - float(c["low"]))
+
+
+def bullish_candle(c):
+    return float(c["close"]) > float(c["open"])
+
+
+def bearish_candle(c):
+    return float(c["close"]) < float(c["open"])
+
+
+def average_body(df, length=10):
+    bodies = (df["close"] - df["open"]).abs()
+    value = bodies.tail(length).mean()
+    return float(value) if not pd.isna(value) else 0.0
+
+
+def atr_value(df, period=14):
+    if len(df) < period + 2:
+        return 0.0
+
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    prev_close = close.shift(1)
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr = tr.rolling(period).mean().iloc[-1]
+
+    if pd.isna(atr):
+        return 0.0
+
+    return float(atr)
+
+# ============================================================
+# SWING DETECTION
+# ============================================================
+def swing_highs(df):
+    highs = []
+
+    if len(df) < SWING_LEFT + SWING_RIGHT + 1:
+        return highs
+
+    for i in range(
+        SWING_LEFT,
+        len(df) - SWING_RIGHT
+    ):
+        value = float(df["high"].iloc[i])
+
+        left = df["high"].iloc[
+            i - SWING_LEFT:i
+        ]
+
+        right = df["high"].iloc[
+            i + 1:i + SWING_RIGHT + 1
+        ]
+
+        if value > float(left.max()) and value >= float(right.max()):
+            highs.append((i, value))
+
+    return highs
+
+
+def swing_lows(df):
+    lows = []
+
+    if len(df) < SWING_LEFT + SWING_RIGHT + 1:
+        return lows
+
+    for i in range(
+        SWING_LEFT,
+        len(df) - SWING_RIGHT
+    ):
+        value = float(df["low"].iloc[i])
+
+        left = df["low"].iloc[
+            i - SWING_LEFT:i
+        ]
+
+        right = df["low"].iloc[
+            i + 1:i + SWING_RIGHT + 1
+        ]
+
+        if value < float(left.min()) and value <= float(right.min()):
+            lows.append((i, value))
+
+    return lows
+
+# ============================================================
+# SUPPLY / DEMAND
+# ============================================================
+def find_demand_zone(df):
     """
-    Continuous monitoring loop
+    Finds a recent bullish displacement and uses the candle/base
+    immediately before the displacement as the demand zone.
     """
-    log.info(f"\n{'#'*70}")
-    log.info(f"# TOPG 6-STEP REVERSAL BOT v1.0")
-    log.info(f"# Starting main loop (scan interval: {scan_interval}s)")
-    log.info(f"#{'#'*68}")
-    
-    startup_msg = (
-        f"🚀 *TOPG 6-STEP BOT ONLINE*\n\n"
-        f"📊 *Monitoring:*\n"
-        + "\n".join([f"  • {s}" for s in MARKETS.keys()]) +
-        f"\n\n🔁 *Strategy:* Counter-Trend Reversals\n"
-        f"⚡ *Method:* BOS → ChoCH → OB → Sweep → Entry → SL/TP\n"
-        f"📈 *Status:* LIVE"
+    work = df.tail(ZONE_LOOKBACK_1H).reset_index(drop=True)
+
+    if len(work) < 15:
+        return None
+
+    avg_body = average_body(work, 10)
+
+    if avg_body <= 0:
+        return None
+
+    candidates = []
+
+    for i in range(3, len(work)):
+        c = work.iloc[i]
+        body = candle_body(c)
+
+        if not bullish_candle(c):
+            continue
+
+        if body < avg_body * DISPLACEMENT_BODY_MULT:
+            continue
+
+        prior_high = float(work["high"].iloc[max(0, i - 5):i].max())
+
+        if float(c["close"]) <= prior_high:
+            continue
+
+        base = work.iloc[i - 1]
+
+        low = min(
+            float(base["open"]),
+            float(base["close"]),
+            float(base["low"]),
+        )
+
+        high = max(
+            float(base["open"]),
+            float(base["close"]),
+            float(base["high"]),
+        )
+
+        candidates.append({
+            "low": low,
+            "high": high,
+            "index": i,
+        })
+
+    if not candidates:
+        return None
+
+    return candidates[-1]
+
+
+def find_supply_zone(df):
+    """
+    Finds a recent bearish displacement and uses the candle/base
+    immediately before the displacement as the supply zone.
+    """
+    work = df.tail(ZONE_LOOKBACK_1H).reset_index(drop=True)
+
+    if len(work) < 15:
+        return None
+
+    avg_body = average_body(work, 10)
+
+    if avg_body <= 0:
+        return None
+
+    candidates = []
+
+    for i in range(3, len(work)):
+        c = work.iloc[i]
+        body = candle_body(c)
+
+        if not bearish_candle(c):
+            continue
+
+        if body < avg_body * DISPLACEMENT_BODY_MULT:
+            continue
+
+        prior_low = float(work["low"].iloc[max(0, i - 5):i].min())
+
+        if float(c["close"]) >= prior_low:
+            continue
+
+        base = work.iloc[i - 1]
+
+        low = min(
+            float(base["open"]),
+            float(base["close"]),
+            float(base["low"]),
+        )
+
+        high = max(
+            float(base["open"]),
+            float(base["close"]),
+            float(base["high"]),
+        )
+
+        candidates.append({
+            "low": low,
+            "high": high,
+            "index": i,
+        })
+
+    if not candidates:
+        return None
+
+    return candidates[-1]
+
+# ============================================================
+# ZONE LOCATION
+# ============================================================
+def price_in_zone(price, zone, tolerance):
+    if zone is None:
+        return False
+
+    return (
+        float(zone["low"]) - tolerance
+        <= price
+        <= float(zone["high"]) + tolerance
     )
-    send_telegram(startup_msg)
-    
-    try:
-        while True:
-            try:
-                # Scan all symbols in parallel
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = []
-                    
-                    for symbol_key in MARKETS.keys():
-                        future = executor.submit(process_symbol, symbol_key)
-                        futures.append((symbol_key, future))
-                        time.sleep(0.3)
-                    
-                    # Collect results
-                    for symbol_key, future in futures:
-                        try:
-                            future.result()
-                        except Exception as e:
-                            log.error(f"❌ Processing error {symbol_key}: {e}")
-                
-                log.info(f"Scan complete | Next scan in {scan_interval}s")
-                time.sleep(scan_interval)
-            
-            except Exception as e:
-                log.error(f"❌ Main loop error: {e}")
-                time.sleep(scan_interval)
-    
-    except KeyboardInterrupt:
-        log.info("\n⛔ Bot stopped by user")
-        send_telegram("⛔ TOPG 6-Step Bot Stopped")
 
+
+def near_demand(price, zone, atr):
+    return price_in_zone(
+        price,
+        zone,
+        atr * ZONE_TOLERANCE_ATR,
+    )
+
+
+def near_supply(price, zone, atr):
+    return price_in_zone(
+        price,
+        zone,
+        atr * ZONE_TOLERANCE_ATR,
+    )
 
 # ============================================================
-# PART 9: CLI / TESTING INTERFACE
+# LIQUIDITY SWEEP
 # ============================================================
+def liquidity_sweep(df, direction):
+    """
+    BUY:
+      current candle sweeps a previous low and closes back above it.
 
-def cli_test_symbol(symbol_key, direction=None):
+    SELL:
+      current candle sweeps a previous high and closes back below it.
     """
-    Test a specific symbol from command line
+    if len(df) < LIQUIDITY_LOOKBACK + 2:
+        return False, None
+
+    previous = df.iloc[
+        -LIQUIDITY_LOOKBACK - 1:-1
+    ]
+
+    last = df.iloc[-1]
+
+    previous_high = float(previous["high"].max())
+    previous_low = float(previous["low"].min())
+
+    if direction == "BUY":
+        swept = float(last["low"]) < previous_low
+        reclaimed = float(last["close"]) > previous_low
+
+        return (
+            swept and reclaimed,
+            previous_low if swept and reclaimed else None,
+        )
+
+    swept = float(last["high"]) > previous_high
+    reclaimed = float(last["close"]) < previous_high
+
+    return (
+        swept and reclaimed,
+        previous_high if swept and reclaimed else None,
+    )
+
+# ============================================================
+# REJECTION CANDLE
+# ============================================================
+def rejection_candle(df, direction):
+    if len(df) < 2:
+        return False
+
+    c = df.iloc[-1]
+
+    op = float(c["open"])
+    cl = float(c["close"])
+    hi = float(c["high"])
+    lo = float(c["low"])
+
+    body = abs(cl - op)
+
+    if body <= 0:
+        return False
+
+    upper = hi - max(op, cl)
+    lower = min(op, cl) - lo
+
+    total = hi - lo
+
+    if total <= 0:
+        return False
+
+    if direction == "BUY":
+        close_position = (cl - lo) / total
+
+        return (
+            lower >= body * REJECTION_WICK_RATIO
+            and cl > op
+            and close_position >= 0.60
+        )
+
+    close_position = (hi - cl) / total
+
+    return (
+        upper >= body * REJECTION_WICK_RATIO
+        and cl < op
+        and close_position >= 0.60
+    )
+
+# ============================================================
+# DISPLACEMENT
+# ============================================================
+def displacement(df, direction):
+    if len(df) < 12:
+        return False
+
+    last = df.iloc[-1]
+    body = candle_body(last)
+    avg = average_body(df.iloc[:-1], 10)
+
+    if avg <= 0:
+        return False
+
+    if body < avg * DISPLACEMENT_BODY_MULT:
+        return False
+
+    if direction == "BUY":
+        return bullish_candle(last)
+
+    return bearish_candle(last)
+
+# ============================================================
+# BOS / CHOCH
+# ============================================================
+def bos(df, direction):
+    if len(df) < BOS_LOOKBACK + 2:
+        return False, None
+
+    last = df.iloc[-1]
+
+    prior = df.iloc[
+        -BOS_LOOKBACK - 1:-1
+    ]
+
+    if direction == "BUY":
+        level = float(prior["high"].max())
+        confirmed = float(last["close"]) > level
+
+        return confirmed, level if confirmed else None
+
+    level = float(prior["low"].min())
+    confirmed = float(last["close"]) < level
+
+    return confirmed, level if confirmed else None
+
+
+def choch(df, direction):
     """
-    log.info(f"Testing {symbol_key} {direction or 'both directions'}")
-    signal = process_symbol(symbol_key, test_direction=direction)
-    
-    if signal:
-        print("\n" + "="*70)
-        print("SIGNAL READY")
-        print("="*70)
-        print(f"Symbol: {signal['symbol']}")
-        print(f"Direction: {signal['direction']}")
-        print(f"Entry: {signal['entry_price']}")
-        print(f"SL: {signal['stop_loss']}")
-        print(f"TP: {signal['take_profit']}")
-        print(f"RR: {signal['risk_reward_ratio']}")
-        print("="*70)
+    Lightweight structure-shift confirmation.
+    BOS remains the stronger confirmation.
+    """
+    if len(df) < 8:
+        return False
+
+    highs = swing_highs(df)
+    lows = swing_lows(df)
+
+    if direction == "BUY":
+        if len(highs) < 1 or len(lows) < 1:
+            return False
+
+        last_high = highs[-1][1]
+        return float(df.iloc[-1]["close"]) > last_high
+
+    if len(highs) < 1 or len(lows) < 1:
+        return False
+
+    last_low = lows[-1][1]
+    return float(df.iloc[-1]["close"]) < last_low
+
+# ============================================================
+# RETEST
+# ============================================================
+def retest_level(df, direction, level, atr):
+    if level is None or len(df) < 3:
+        return False
+
+    tolerance = atr * RETEST_TOLERANCE_ATR
+    last = df.iloc[-1]
+
+    if direction == "BUY":
+        touched = float(last["low"]) <= level + tolerance
+        held = float(last["close"]) >= level
+        return touched and held
+
+    touched = float(last["high"]) >= level - tolerance
+    held = float(last["close"]) <= level
+    return touched and held
+
+# ============================================================
+# HIGHER-TIMEFRAME LOCATION
+# ============================================================
+def htf_location(df_1h, direction):
+    atr = atr_value(df_1h)
+
+    if atr <= 0:
+        return False, None, None
+
+    price = float(df_1h.iloc[-1]["close"])
+
+    demand = find_demand_zone(df_1h)
+    supply = find_supply_zone(df_1h)
+
+    tolerance = atr * ZONE_TOLERANCE_ATR
+
+    if direction == "BUY":
+        return (
+            near_demand(price, demand, atr),
+            demand,
+            supply,
+        )
+
+    return (
+        near_supply(price, supply, atr),
+        demand,
+        supply,
+    )
+
+# ============================================================
+# 15M REVERSAL SETUP
+# ============================================================
+def reversal_setup(df_1h, df_15m, direction):
+    """
+    A+ reversal:
+      1H location
+      15M liquidity sweep
+      15M rejection
+      15M BOS / CHOCH
+    """
+    atr_1h = atr_value(df_1h)
+    atr_15m = atr_value(df_15m)
+
+    if atr_1h <= 0 or atr_15m <= 0:
+        return {
+            "valid": False,
+            "score": 0,
+            "level": None,
+            "sweep": None,
+            "reason": "ATR unavailable",
+        }
+
+    price_1h = float(df_1h.iloc[-1]["close"])
+
+    demand = find_demand_zone(df_1h)
+    supply = find_supply_zone(df_1h)
+
+    if direction == "BUY":
+        location = near_demand(price_1h, demand, atr_1h)
     else:
-        print("\n❌ No signal ready")
+        location = near_supply(price_1h, supply, atr_1h)
+
+    if not location:
+        return {
+            "valid": False,
+            "score": 0,
+            "level": None,
+            "sweep": None,
+            "reason": "No 1H zone location",
+        }
+
+    swept, sweep_level = liquidity_sweep(df_15m, direction)
+
+    if not swept:
+        return {
+            "valid": False,
+            "score": 0,
+            "level": None,
+            "sweep": None,
+            "reason": "No liquidity sweep",
+        }
+
+    rejection = rejection_candle(df_15m, direction)
+    displacement_ok = displacement(df_15m, direction)
+    bos_ok, bos_level = bos(df_15m, direction)
+    choch_ok = choch(df_15m, direction)
+
+    score = 2  # 1H location
+    score += 2  # liquidity sweep
+
+    if rejection:
+        score += 1
+
+    if bos_ok:
+        score += 2
+
+    if choch_ok:
+        score += 1
+
+    if displacement_ok:
+        score += 1
+
+    # Reversal must have structure confirmation.
+    valid = (
+        location
+        and swept
+        and rejection
+        and (bos_ok or choch_ok)
+        and score >= MIN_PA_SCORE
+    )
+
+    return {
+        "valid": valid,
+        "score": score,
+        "level": bos_level if bos_ok else sweep_level,
+        "sweep": sweep_level,
+        "demand": demand,
+        "supply": supply,
+        "reason": "Reversal confirmed" if valid else "Structure confirmation incomplete",
+    }
+
+# ============================================================
+# BREAKOUT / RETEST
+# ============================================================
+def breakout_setup(df_1h, df_15m, df_5m, direction):
+    """
+    Confirmed breakout:
+      1H opposing zone / structure
+      15M close through structure
+      15M displacement
+      5M retest
+      5M confirmation candle
+    """
+    atr_15m = atr_value(df_15m)
+    atr_5m = atr_value(df_5m)
+
+    if atr_15m <= 0 or atr_5m <= 0:
+        return {
+            "valid": False,
+            "score": 0,
+            "level": None,
+            "reason": "ATR unavailable",
+        }
+
+    last_15 = df_15m.iloc[-1]
+    last_5 = df_5m.iloc[-1]
+
+    prior = df_15m.iloc[-BOS_LOOKBACK - 1:-1]
+
+    if direction == "BUY":
+        level = float(prior["high"].max())
+        breakout = float(last_15["close"]) > level
+        displacement_ok = displacement(df_15m, "BUY")
+
+        retest = retest_level(
+            df_5m,
+            "BUY",
+            level,
+            atr_5m,
+        )
+
+        confirmation = (
+            bullish_candle(last_5)
+            and float(last_5["close"]) > level
+        )
+
+    else:
+        level = float(prior["low"].min())
+        breakout = float(last_15["close"]) < level
+        displacement_ok = displacement(df_15m, "SELL")
+
+        retest = retest_level(
+            df_5m,
+            "SELL",
+            level,
+            atr_5m,
+        )
+
+        confirmation = (
+            bearish_candle(last_5)
+            and float(last_5["close"]) < level
+        )
+
+    score = 0
+
+    if breakout:
+        score += 3
+
+    if displacement_ok:
+        score += 2
+
+    if retest:
+        score += 2
+
+    if confirmation:
+        score += 2
+
+    valid = (
+        breakout
+        and displacement_ok
+        and retest
+        and confirmation
+        and score >= 8
+    )
+
+    return {
+        "valid": valid,
+        "score": score,
+        "level": level,
+        "reason": "Breakout/retest confirmed" if valid else "Breakout incomplete",
+    }
+
+# ============================================================
+# PA SCORE
+# ============================================================
+def quality_from_score(score):
+    if score >= 10:
+        return "GOD-TIER PA"
+    if score >= 9:
+        return "A+ PA"
+    if score >= 8:
+        return "A PA"
+    return "SKIP"
+
+# ============================================================
+# CORRELATION BLOCKER
+# ============================================================
+def correlated_signal_block(symbol):
+    if not CORRELATION_BLOCK:
+        return False
+
+    now = time.time()
+
+    for group in CORRELATED_GROUPS:
+        if symbol not in group:
+            continue
+
+        active = 0
+
+        for other in group:
+            timestamp = last_signal_time.get(other, 0)
+
+            if now - timestamp < CORRELATION_WINDOW:
+                active += 1
+
+        if active >= MAX_CORRELATED_SIGNALS:
+            log.info(
+                "Correlation block: %s | group=%s",
+                symbol,
+                group,
+            )
+            return True
+
+    return False
+
+# ============================================================
+# SESSION SIGNAL #1 GATE
+# ============================================================
+def session_gate(symbol, session):
+    state = session_signal_count[symbol]
+
+    if state["session"] != session:
+        state["session"] = session
+        state["count"] = 0
+
+    if SIGNAL_ONE_PER_SESSION and state["count"] >= 1:
+        return False
+
+    return True
 
 
-def cli_show_markets():
-    """
-    Show available markets
-    """
-    print("\nAvailable Markets:")
-    for symbol_key in MARKETS.keys():
-        config = MARKETS[symbol_key]
-        print(f"  • {symbol_key} ({config['yf_symbol']})")
+def consume_session_signal(symbol, session):
+    state = session_signal_count[symbol]
 
+    if state["session"] != session:
+        state["session"] = session
+        state["count"] = 0
 
-def cli_show_signals():
-    """
-    Show recent signals from log
-    """
-    if not os.path.isfile("signals_log.csv"):
-        print("No signals logged yet")
-        return
-    
+    state["count"] += 1
+
+# ============================================================
+# DUPLICATE / COOLDOWN
+# ============================================================
+def duplicate_or_cooldown(symbol, direction, signal_type):
+    now = time.time()
+
+    last_time = last_signal_time.get(symbol, 0)
+    last_dir = last_signal_direction.get(symbol)
+    last_type = last_signal_type.get(symbol)
+
+    if now - last_time < SIGNAL_COOLDOWN:
+        return True
+
+    if last_dir == direction and last_type == signal_type:
+        return True
+
+    return False
+
+# ============================================================
+# LEVELS
+# ============================================================
+def calculate_levels(
+    symbol,
+    direction,
+    price,
+    df_5m,
+    df_15m,
+    setup,
+    signal_type,
+):
+    cfg = MARKETS[symbol]
+
+    atr = atr_value(df_5m)
+
+    if atr <= 0:
+        atr = atr_value(df_15m)
+
+    if atr <= 0:
+        return None
+
+    decimals = cfg["decimals"]
+    buffer = max(
+        cfg["min_sl"] * cfg["sl_buffer"],
+        atr * 0.10,
+    )
+
+    if signal_type == "REVERSAL":
+        sweep = setup.get("sweep")
+
+        if sweep is not None:
+            if direction == "BUY":
+                sl_dist = max(
+                    cfg["min_sl"],
+                    price - float(sweep) + buffer,
+                )
+            else:
+                sl_dist = max(
+                    cfg["min_sl"],
+                    float(sweep) - price + buffer,
+                )
+        else:
+            sl_dist = max(cfg["min_sl"], atr * 0.80)
+
+    else:
+        level = setup.get("level")
+
+        if direction == "BUY":
+            sl_dist = max(
+                cfg["min_sl"],
+                price - float(level) + buffer,
+            )
+        else:
+            sl_dist = max(
+                cfg["min_sl"],
+                float(level) - price + buffer,
+            )
+
+    # Protect against an accidental extreme SL.
+    max_sl = max(cfg["min_sl"] * 3.0, atr * 2.0)
+
+    if sl_dist > max_sl:
+        return None
+
+    rr = cfg["rr"]
+
+    if rr < MIN_RR:
+        return None
+
+    if direction == "BUY":
+        sl = price - sl_dist
+        tp = price + sl_dist * rr
+    else:
+        sl = price + sl_dist
+        tp = price - sl_dist * rr
+
+    return (
+        round(sl, decimals),
+        round(tp, decimals),
+        round(sl_dist, decimals),
+        rr,
+    )
+
+# ============================================================
+# LOT SIZE
+# ============================================================
+def lot_for_risk(symbol, sl_dist):
+    if sl_dist <= 0:
+        return 0.0
+
+    dpp = DOLLAR_PER_POINT.get(symbol)
+
+    if not dpp:
+        return 0.0
+
+    raw = RISK_PER_TRADE / (
+        sl_dist * dpp
+    )
+
+    cap = LOT_CAP.get(symbol, raw)
+
+    if symbol in {
+        "NIFTY50",
+        "BANKNIFTY",
+        "SENSEX",
+        "RELIANCE",
+        "TCS",
+    }:
+        return float(max(1, round(min(raw, cap))))
+
+    return round(
+        max(0.01, min(raw, cap)),
+        3,
+    )
+
+# ============================================================
+# TARGET STRUCTURE
+# ============================================================
+def nearest_structure_target(
+    df,
+    direction,
+    entry,
+    rr_tp,
+):
+    highs = [x[1] for x in swing_highs(df)]
+    lows = [x[1] for x in swing_lows(df)]
+
+    if direction == "BUY":
+        candidates = [
+            x for x in highs
+            if x > entry
+        ]
+        return min(candidates) if candidates else rr_tp
+
+    candidates = [
+        x for x in lows
+        if x < entry
+    ]
+
+    return max(candidates) if candidates else rr_tp
+
+# ============================================================
+# LOGGING
+# ============================================================
+def log_signal(
+    symbol,
+    direction,
+    score,
+    signal_type,
+    entry,
+    sl,
+    tp,
+    session,
+):
+    row = [
+        SYSTEM_VERSION,
+        datetime.now(timezone.utc).isoformat(),
+        symbol,
+        direction,
+        score,
+        signal_type,
+        entry,
+        sl,
+        tp,
+        session,
+    ]
+
+    with log_lock:
+        with open(
+            "signals_log.csv",
+            "a",
+            newline="",
+            encoding="utf-8",
+        ) as f:
+            writer = csv.writer(f)
+
+            if os.path.getsize("signals_log.csv") == 0:
+                writer.writerow([
+                    "version",
+                    "timestamp",
+                    "symbol",
+                    "direction",
+                    "score",
+                    "signal_type",
+                    "entry",
+                    "sl",
+                    "tp",
+                    "session",
+                ])
+
+            writer.writerow(row)
+
+        with open(
+            "signals_backup.csv",
+            "a",
+            newline="",
+            encoding="utf-8",
+        ) as f:
+            csv.writer(f).writerow(row)
+
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
+def send_signal(
+    symbol,
+    direction,
+    signal_type,
+    score,
+    session,
+    entry,
+    sl,
+    tp,
+    lot,
+    setup,
+):
+    cfg = MARKETS[symbol]
+    dec = cfg["decimals"]
+
+    emoji = "📈" if direction == "BUY" else "📉"
+
+    flag = (
+        "🇮🇳 INDIA INTRADAY"
+        if cfg["market_type"] == "india"
+        else "🌍 GLOBAL"
+    )
+
+    quality = quality_from_score(score)
+
+    sweep = setup.get("sweep")
+    level = setup.get("level")
+
+    msg = (
+        f"⚡ *{SYSTEM_VERSION}*\n"
+        f"*{cfg['execution']}* | {flag}\n\n"
+        f"🔥 *{direction}* {emoji}\n"
+        f"🚀 *Setup:* {signal_type}\n"
+        f"⏱ *Structure:* 1H → 15M → 5M\n"
+        f"⭐ *PA Score:* {score}/10\n"
+        f"🏆 *Quality:* {quality}\n\n"
+        f"📍 *Entry:* {entry:,.{dec}f}\n"
+        f"🛑 *SL:* {sl:,.{dec}f}\n"
+        f"🎯 *TP:* {tp:,.{dec}f}\n"
+        f"⚖️ *RR:* 1:{cfg['rr']:.2f}\n"
+        f"💵 *Lot:* {lot}\n\n"
+        f"📌 *Session:* {session}\n"
+        f"💧 *Liquidity:* "
+        f"{'CONFIRMED' if sweep is not None else 'N/A'}\n"
+        f"📐 *Structure Level:* "
+        f"{f'{level:,.{dec}f}' if level is not None else 'N/A'}\n\n"
+        f"✅ 1H Location\n"
+        f"✅ 15M Price Action\n"
+        f"✅ Liquidity / Structure\n"
+        f"✅ 5M Trigger\n"
+        f"✅ Risk Filter\n\n"
+        f"🛡 *PRICE ACTION ONLY — NO INDICATOR SCORING*"
+    )
+
+    send_telegram(msg)
+
+# ============================================================
+# REVERSAL PROCESS
+# ============================================================
+def process_reversal(symbol, frames, session):
+    df_1h = frames["1H"]
+    df_15m = frames["15M"]
+    df_5m = frames["5M"]
+
+    for direction in ("BUY", "SELL"):
+        setup = reversal_setup(
+            df_1h,
+            df_15m,
+            direction,
+        )
+
+        if not setup["valid"]:
+            continue
+
+        # 5M must provide an entry trigger after 15M setup.
+        level = setup.get("level")
+
+        if level is None:
+            continue
+
+        atr_5m = atr_value(df_5m)
+
+        if atr_5m <= 0:
+            continue
+
+        trigger = retest_level(
+            df_5m,
+            direction,
+            float(level),
+            atr_5m,
+        )
+
+        if not trigger:
+            continue
+
+        if not rejection_candle(df_5m, direction):
+            continue
+
+        if correlated_signal_block(symbol):
+            return False
+
+        if duplicate_or_cooldown(
+            symbol,
+            direction,
+            "REVERSAL",
+        ):
+            continue
+
+        price = float(df_5m.iloc[-1]["close"])
+
+        if direction == "BUY":
+            price += EXECUTION_BUFFER[symbol]
+        else:
+            price -= EXECUTION_BUFFER[symbol]
+
+        levels = calculate_levels(
+            symbol,
+            direction,
+            price,
+            df_5m,
+            df_15m,
+            setup,
+            "REVERSAL",
+        )
+
+        if levels is None:
+            log.info(
+                "%s reversal rejected: invalid SL/structure",
+                symbol,
+            )
+            continue
+
+        sl, tp, sl_dist, rr = levels
+
+        # TP cannot be blindly forced through nearby structure.
+        structural_tp = nearest_structure_target(
+            df_15m,
+            direction,
+            price,
+            tp,
+        )
+
+        if direction == "BUY":
+            if structural_tp > price and structural_tp < tp:
+                tp = structural_tp
+        else:
+            if structural_tp < price and structural_tp > tp:
+                tp = structural_tp
+
+        actual_rr = (
+            abs(tp - price) / sl_dist
+            if sl_dist > 0
+            else 0
+        )
+
+        if actual_rr < MIN_RR:
+            log.info(
+                "%s reversal rejected: RR %.2f < %.2f",
+                symbol,
+                actual_rr,
+                MIN_RR,
+            )
+            continue
+
+        lot = lot_for_risk(symbol, sl_dist)
+
+        score = min(10, setup["score"] + 1)
+
+        log_signal(
+            symbol,
+            direction,
+            score,
+            "REVERSAL",
+            price,
+            sl,
+            tp,
+            session,
+        )
+
+        send_signal(
+            symbol,
+            direction,
+            "LIQUIDITY REVERSAL",
+            score,
+            session,
+            price,
+            sl,
+            tp,
+            lot,
+            setup,
+        )
+
+        with signal_lock:
+            last_signal_time[symbol] = time.time()
+            last_signal_direction[symbol] = direction
+            last_signal_type[symbol] = "REVERSAL"
+
+            daily_signal_count[symbol] += 1
+
+            consume_session_signal(
+                symbol,
+                session,
+            )
+
+        log.info(
+            "REVERSAL SIGNAL %s %s | entry=%s sl=%s tp=%s score=%s",
+            symbol,
+            direction,
+            price,
+            sl,
+            tp,
+            score,
+        )
+
+        return True
+
+    return False
+
+# ============================================================
+# BREAKOUT PROCESS
+# ============================================================
+def process_breakout(symbol, frames, session):
+    df_1h = frames["1H"]
+    df_15m = frames["15M"]
+    df_5m = frames["5M"]
+
+    for direction in ("BUY", "SELL"):
+        setup = breakout_setup(
+            df_1h,
+            df_15m,
+            df_5m,
+            direction,
+        )
+
+        if not setup["valid"]:
+            continue
+
+        if correlated_signal_block(symbol):
+            return False
+
+        if duplicate_or_cooldown(
+            symbol,
+            direction,
+            "BREAKOUT",
+        ):
+            continue
+
+        price = float(df_5m.iloc[-1]["close"])
+
+        if direction == "BUY":
+            price += EXECUTION_BUFFER[symbol]
+        else:
+            price -= EXECUTION_BUFFER[symbol]
+
+        levels = calculate_levels(
+            symbol,
+            direction,
+            price,
+            df_5m,
+            df_15m,
+            setup,
+            "BREAKOUT",
+        )
+
+        if levels is None:
+            continue
+
+        sl, tp, sl_dist, rr = levels
+
+        actual_rr = (
+            abs(tp - price) / sl_dist
+            if sl_dist > 0
+            else 0
+        )
+
+        if actual_rr < MIN_RR:
+            continue
+
+        lot = lot_for_risk(symbol, sl_dist)
+
+        score = min(10, setup["score"] + 1)
+
+        log_signal(
+            symbol,
+            direction,
+            score,
+            "BREAKOUT",
+            price,
+            sl,
+            tp,
+            session,
+        )
+
+        send_signal(
+            symbol,
+            direction,
+            "BREAKOUT + RETEST",
+            score,
+            session,
+            price,
+            sl,
+            tp,
+            lot,
+            setup,
+        )
+
+        with signal_lock:
+            last_signal_time[symbol] = time.time()
+            last_signal_direction[symbol] = direction
+            last_signal_type[symbol] = "BREAKOUT"
+
+            daily_signal_count[symbol] += 1
+
+            consume_session_signal(
+                symbol,
+                session,
+            )
+
+        log.info(
+            "BREAKOUT SIGNAL %s %s | entry=%s sl=%s tp=%s score=%s",
+            symbol,
+            direction,
+            price,
+            sl,
+            tp,
+            score,
+        )
+
+        return True
+
+    return False
+
+# ============================================================
+# MASTER SYMBOL PROCESS
+# ============================================================
+def process_symbol(symbol):
     try:
-        df = pd.read_csv("signals_log.csv")
-        print(f"\nRecent Signals ({len(df)} total):")
-        print(df.tail(10).to_string())
-    except Exception as e:
-        print(f"Error reading log: {e}")
+        if weekend_block():
+            return
 
+        if daily_loss_lock():
+            return
+
+        if loss_streak_lock():
+            return
+
+        if daily_signal_count[symbol] >= MARKETS[symbol]["daily_cap"]:
+            return
+
+        ok, session = in_session(symbol)
+
+        if not ok:
+            return
+
+        if session not in MARKETS[symbol]["sessions"]:
+            return
+
+        if not session_gate(symbol, session):
+            return
+
+        frames = fetch_timeframes(symbol)
+
+        if frames is None:
+            return
+
+        # ----------------------------------------------------
+        # REVERSAL FIRST
+        # ----------------------------------------------------
+        fired = process_reversal(
+            symbol,
+            frames,
+            session,
+        )
+
+        if fired:
+            return
+
+        # ----------------------------------------------------
+        # BREAKOUT SECOND
+        # ----------------------------------------------------
+        process_breakout(
+            symbol,
+            frames,
+            session,
+        )
+
+    except Exception as exc:
+        log.exception(
+            "Symbol processing error %s: %s",
+            symbol,
+            exc,
+        )
 
 # ============================================================
-# MAIN ENTRY POINT
+# STARTUP MESSAGE
 # ============================================================
+def startup_message():
+    return (
+        f"⚡ *{SYSTEM_VERSION} LIVE*\n\n"
+        f"📊 *PRICE ACTION ENGINE*\n"
+        f"1H = Location / Structure\n"
+        f"15M = Liquidity + BOS/CHOCH\n"
+        f"5M = Retest + Trigger\n\n"
+        f"🔥 *Setups*\n"
+        f"1. Liquidity Reversal\n"
+        f"2. Breakout + Retest\n\n"
+        f"🇮🇳 NIFTY50 | BANKNIFTY | SENSEX\n"
+        f"🏢 RELIANCE | TCS\n"
+        f"🌍 XAU/USD | NAS100 | SPX500\n"
+        f"💶 EUR/USD | GBP/JPY\n\n"
+        f"🔒 Signal #1 per session\n"
+        f"🛡 Correlation blocker\n"
+        f"🛑 Daily loss lock\n"
+        f"🛑 Consecutive-loss lock\n"
+        f"⚖️ Minimum RR: {MIN_RR}\n\n"
+        f"🚫 EMA / RSI / ADX / VWAP / Wizard AI removed\n"
+        f"✅ Pure Price Action / Liquidity / Structure"
+    )
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+def main():
+    log.info("%s STARTED", SYSTEM_VERSION)
+
+    send_telegram(startup_message())
+
+    loop = 0
+
+    while True:
+        try:
+            reset_daily()
+            watchdog()
+
+            log.info(
+                "Starting PA scan #%s | symbols=%s",
+                loop,
+                len(PRIORITY_MARKETS),
+            )
+
+            with ThreadPoolExecutor(
+                max_workers=len(PRIORITY_MARKETS)
+            ) as executor:
+
+                futures = [
+                    executor.submit(
+                        process_symbol,
+                        symbol,
+                    )
+                    for symbol in PRIORITY_MARKETS
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        log.error(
+                            "Worker error: %s",
+                            exc,
+                        )
+
+            loop += 1
+
+            gc.collect()
+
+            time.sleep(SCAN_INTERVAL)
+
+        except KeyboardInterrupt:
+            log.info("Stopped by user")
+            break
+
+        except Exception as exc:
+            log.exception(
+                "Main loop error: %s",
+                exc,
+            )
+            time.sleep(SCAN_INTERVAL)
+
 
 if __name__ == "__main__":
-    import sys
-    
-    # Check for Telegram credentials
-    if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("""
-╔════════════════════════════════════════════════════════════╗
-║  SETUP REQUIRED: Edit TELEGRAM_TOKEN and TELEGRAM_CHAT_ID  ║
-║                                                            ║
-║  1. Get token from @BotFather on Telegram                 ║
-║  2. Get chat ID: message @userinfobot                      ║
-║  3. Edit lines in this file:                              ║
-║     TELEGRAM_TOKEN = "YOUR_TOKEN_HERE"                    ║
-║     TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"                ║
-║                                                            ║
-║  Or set environment variables:                            ║
-║     export TELEGRAM_TOKEN="..."                           ║
-║     export TELEGRAM_CHAT_ID="..."                         ║
-║                                                            ║
-╚════════════════════════════════════════════════════════════╝
-        """)
-        sys.exit(1)
-    
-    if len(sys.argv) > 1:
-        command = sys.argv[1].lower()
-        
-        if command == "test":
-            # Test specific symbol
-            symbol = sys.argv[2] if len(sys.argv) > 2 else "XAU/USD"
-            direction = sys.argv[3] if len(sys.argv) > 3 else None
-            cli_test_symbol(symbol, direction)
-        
-        elif command == "list":
-            cli_show_markets()
-        
-        elif command == "signals":
-            cli_show_signals()
-        
-        elif command == "run":
-            interval = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-            main_loop(scan_interval=interval)
-        
-        else:
-            print(f"""
-TOPG 6-Step Reversal Bot - Commands:
-
-  python TOPG_COMPLETE_BOT.py run [interval]
-    • Run continuous monitoring (default: 5s scan interval)
-    • Example: python TOPG_COMPLETE_BOT.py run 10
-
-  python TOPG_COMPLETE_BOT.py test [symbol] [direction]
-    • Test specific symbol for signals
-    • Example: python TOPG_COMPLETE_BOT.py test XAU/USD BULL
-
-  python TOPG_COMPLETE_BOT.py list
-    • Show available markets
-
-  python TOPG_COMPLETE_BOT.py signals
-    • Show recent signals from log
-
-SETUP:
-  1. pip install pandas numpy ta yfinance requests
-  2. Edit TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in this file
-  3. Run: python TOPG_COMPLETE_BOT.py run
-
-Logs: Check topg_bot.log for detailed output
-            """)
-    else:
-        # Default: run continuous monitoring
-        main_loop(scan_interval=5)
+    main()
