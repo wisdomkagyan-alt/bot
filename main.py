@@ -44,7 +44,7 @@ SYSTEM_VERSION = "PA-SUPREME-2026-SCALPER"
 #   CHAT_ID="your_chat_id"
 #
 # DO NOT hard-code the Telegram bot token.
-TOKEN = os.getenv("TOKEN", "https://chatgpt.com/share/6a79dd4e-0590-83ee-85bb-60c757e75850")
+TOKEN = os.getenv("TOKEN", "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU")
 CHAT_ID = os.getenv("CHAT_ID", "8783763018")
 
 # ============================================================
