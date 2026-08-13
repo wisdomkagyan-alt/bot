@@ -193,7 +193,7 @@ WATCH_COOLDOWN = 600
 SIGNAL_ONE_PER_SESSION = True
 
 # Fast decision loop. Data is refreshed separately.
-SCAN_INTERVAL = 5.0
+SCAN_INTERVAL = 1.0
 DATA_REFRESH_INTERVAL = 15.0
 
 # ============================================================
