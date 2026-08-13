@@ -1,50 +1,42 @@
 # ============================================================
 # PEPPERSTONE PRICE ACTION HUNTER
-# PA-SUPREME-2026 — ADVANCE PRICE-ACTION EDITION v2
+# PA-SUPREME-2026 — ADVANCE PRICE-ACTION EDITION v3
 #
 # 1H  = LOCATION / MARKET STRUCTURE
 # 15M = LIQUIDITY / BOS / CHOCH
 # 5M  = ENTRY TRIGGER
 #
 # ALERT STAGES
-#   ⚠️ PRE-SIGNAL = one alert per detected zone
-#   👀 WATCH      = one alert per structure setup
-#   🚨 TRADE      = confirmed PA entry
+#   ⚠️ PRE-SIGNAL  = setup approaching zone
+#   👀 WATCH       = structure forming
+#   🚨 TRADE       = confirmed PA entry
 #
-# IMPORTANT FIX:
-#   The old version could repeatedly send PRE messages every
-#   scan because the same zone remained valid.
+# IMPORTANT
+#   This version uses Yahoo Finance as the market-data source.
+#   It scans cached data every 1 second.
+#   Yahoo data itself is refreshed every 15 seconds.
 #
-#   This version locks:
-#       SYMBOL + DIRECTION + ZONE
+#   It is NOT a Pepperstone/MT5 native tick feed.
 #
-#   Therefore the same zone cannot spam Telegram every second.
+# ANTI-SPAM
+#   PRE  = maximum one alert per symbol/direction/setup cycle
+#   WATCH = maximum one alert per symbol/direction/structure cycle
+#   TRADE = cooldown + daily/session protection
 #
-# DATA:
-#   Yahoo Finance is used for market data in this version.
+# TELEGRAM
+#   Set:
+#       TELEGRAM_TOKEN
+#       TELEGRAM_CHAT_ID
 #
-# LOOP:
-#   Decision scan     = 1 second
-#   Data refresh      = 15 seconds
-#
-# STRUCTURE:
-#   1H -> Location
-#   15M -> Liquidity / BOS / CHOCH
-#   5M -> Trigger
-#
-# TARGET:
-#   Minimum RR = 1.80R
-#   Maximum RR = 4.00R
-#   Target uses 5M / 15M / 1H structure
-#
+# NEVER hard-code the Telegram token.
 # ============================================================
 
-import os
-import time
 import csv
-import math
 import gc
 import logging
+import math
+import os
+import time
 
 from datetime import datetime, timezone
 from threading import Lock
@@ -56,36 +48,26 @@ import yfinance as yf
 
 
 # ============================================================
-# SYSTEM
+# VERSION
 # ============================================================
 
-VERSION = "PA-SUPREME-2026-ADVANCE-v2"
+VERSION = "PA-SUPREME-2026-ADVANCE-v3"
 
 
 # ============================================================
 # TELEGRAM CONFIG
 # ============================================================
-#
-# Set these as environment variables:
-#
-# TELEGRAM_TOKEN
-# TELEGRAM_CHAT_ID
-#
-# Example:
-#
-# export TELEGRAM_TOKEN="YOUR_NEW_BOT_TOKEN"
-# export TELEGRAM_CHAT_ID="YOUR_CHAT_ID"
-#
-# ============================================================
 
 TOKEN = (
     os.getenv("TELEGRAM_TOKEN")
-    or os.getenv("TOKEN", "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU")
+    or os.getenv("TOKEN")
+    or ""
 )
 
 CHAT_ID = (
     os.getenv("TELEGRAM_CHAT_ID")
-    or os.getenv("CHAT_ID", "8783763018")
+    or os.getenv("CHAT_ID")
+    or ""
 )
 
 
@@ -97,11 +79,6 @@ SCAN_INTERVAL = 1.0
 
 DATA_REFRESH_INTERVAL = 15.0
 
-
-# ============================================================
-# ADVANCE SIGNAL
-# ============================================================
-
 PRE_SIGNAL_ATR = 0.75
 
 PRE_SIGNAL_COOLDOWN = 900
@@ -110,19 +87,9 @@ WATCH_COOLDOWN = 600
 
 TRADE_SIGNAL_COOLDOWN = 900
 
-
-# ============================================================
-# RR
-# ============================================================
-
 MIN_RR = 1.80
 
 MAX_RR = 4.00
-
-
-# ============================================================
-# PRICE ACTION
-# ============================================================
 
 MIN_PA_SCORE = 8
 
@@ -144,21 +111,11 @@ REJECTION_WICK_RATIO = 1.30
 
 DISPLACEMENT_BODY_MULT = 1.20
 
-
-# ============================================================
-# RISK
-# ============================================================
-
 RISK_PER_TRADE = 50.0
 
 MAX_DAILY_LOSS = -300.0
 
 MAX_CONSECUTIVE_LOSSES = 3
-
-
-# ============================================================
-# SESSION LIMIT
-# ============================================================
 
 SIGNAL_ONE_PER_SESSION = True
 
@@ -328,10 +285,10 @@ SYMBOLS = list(MARKETS.keys())
 
 
 # ============================================================
-# DOLLAR PER POINT
+# RISK / CONTRACT SETTINGS
 # ============================================================
 
-DPP = {
+DOLLAR_PER_POINT = {
 
     "XAU/USD": 100,
 
@@ -355,39 +312,31 @@ DPP = {
 }
 
 
-# ============================================================
-# LOT CAPS
-# ============================================================
-
 LOT_CAP = {
 
-    "XAU/USD": 1.5,
+    "XAU/USD": 1.50,
 
-    "NAS100": 2.0,
+    "NAS100": 2.00,
 
-    "SPX500": 2.0,
+    "SPX500": 2.00,
 
-    "EUR/USD": 3.0,
+    "EUR/USD": 3.00,
 
-    "GBP/JPY": 2.0,
+    "GBP/JPY": 2.00,
 
-    "NIFTY50": 50,
+    "NIFTY50": 50.0,
 
-    "BANKNIFTY": 50,
+    "BANKNIFTY": 50.0,
 
-    "SENSEX": 50,
+    "SENSEX": 50.0,
 
-    "RELIANCE": 500,
+    "RELIANCE": 500.0,
 
-    "TCS": 500,
+    "TCS": 500.0,
 }
 
 
-# ============================================================
-# EXECUTION BUFFER
-# ============================================================
-
-BUFFER = {
+EXECUTION_BUFFER = {
 
     "XAU/USD": 0.15,
 
@@ -423,16 +372,7 @@ logging.basicConfig(
 log = logging.getLogger(VERSION)
 
 
-# ============================================================
-# HTTP
-# ============================================================
-
 http = requests.Session()
-
-
-# ============================================================
-# LOCKS
-# ============================================================
 
 cache_lock = Lock()
 
@@ -442,7 +382,7 @@ log_lock = Lock()
 
 
 # ============================================================
-# CACHE
+# GLOBAL STATE
 # ============================================================
 
 frames_cache = {}
@@ -450,45 +390,61 @@ frames_cache = {}
 frames_time = {}
 
 
-# ============================================================
-# IMPORTANT ALERT STATE
+# ------------------------------------------------------------
+# PRE STATE
 #
-# PRE STATE:
-#   Prevents same zone from sending repeatedly.
+# Structure:
 #
-# WATCH STATE:
-#   Prevents same structure from sending repeatedly.
-#
-# ============================================================
+# pre_state[key] = {
+#     "time": ...,
+#     "zone_id": ...,
+#     "session": ...
+# }
+# ------------------------------------------------------------
 
 pre_state = {}
 
+
+# ------------------------------------------------------------
+# WATCH STATE
+# ------------------------------------------------------------
+
 watch_state = {}
+
+
+# ------------------------------------------------------------
+# TRADE STATE
+# ------------------------------------------------------------
 
 last_trade = {}
 
+last_trade_direction = {}
 
-# ============================================================
+last_trade_setup = {}
+
+
+# ------------------------------------------------------------
 # DAILY STATE
-# ============================================================
+# ------------------------------------------------------------
 
 daily_count = {
-    s: 0 for s in SYMBOLS
+    symbol: 0
+    for symbol in SYMBOLS
 }
 
 
 session_count = {
-    s: {
+    symbol: {
         "session": None,
         "count": 0,
     }
-    for s in SYMBOLS
+    for symbol in SYMBOLS
 }
 
 
 daily_pnl = 0.0
 
-losses = 0
+consecutive_losses = 0
 
 reset_date = datetime.now(timezone.utc).date()
 
@@ -497,7 +453,7 @@ reset_date = datetime.now(timezone.utc).date()
 # TELEGRAM
 # ============================================================
 
-def tg(message):
+def send_telegram(message):
 
     if not TOKEN or not CHAT_ID:
 
@@ -508,24 +464,23 @@ def tg(message):
 
         return False
 
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TOKEN}/sendMessage"
+    )
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+
     try:
 
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{TOKEN}/sendMessage"
-        )
-
         response = http.post(
-
             url,
-
-            json={
-                "chat_id": CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            },
-
+            json=payload,
             timeout=10,
         )
 
@@ -539,6 +494,8 @@ def tg(message):
             response.text[:300],
         )
 
+        return False
+
     except Exception as exc:
 
         log.error(
@@ -546,14 +503,14 @@ def tg(message):
             exc,
         )
 
-    return False
+        return False
 
 
 # ============================================================
 # SESSION
 # ============================================================
 
-def session(symbol):
+def get_session(symbol):
 
     now = datetime.now(timezone.utc)
 
@@ -562,29 +519,20 @@ def session(symbol):
         + now.minute
     )
 
-    # --------------------------------------------------------
-    # INDIA
-    # --------------------------------------------------------
+    market_type = MARKETS[symbol]["market_type"]
 
-    if MARKETS[symbol]["market_type"] == "india":
+    if market_type == "india":
 
         if 225 <= hm < 330:
-
             return True, "India Open"
 
         if 330 <= hm < 450:
-
             return True, "India Midday"
 
         if 450 <= hm < 600:
-
             return True, "India Close"
 
         return False, "Closed"
-
-    # --------------------------------------------------------
-    # GLOBAL
-    # --------------------------------------------------------
 
     if 60 <= hm < 360:
 
@@ -609,151 +557,156 @@ def session(symbol):
 # WEEKEND
 # ============================================================
 
-def weekend():
+def weekend_block():
 
     now = datetime.now(timezone.utc)
 
-    return (
-        now.weekday() == 5
-        or (
-            now.weekday() == 6
-            and now.hour < 21
-        )
-    )
+    if now.weekday() == 5:
+        return True
+
+    if now.weekday() == 6 and now.hour < 21:
+        return True
+
+    return False
 
 
 # ============================================================
-# YAHOO DATA
+# DATA FETCH
 # ============================================================
 
-def fetch(ticker):
+def fetch_yahoo(ticker):
 
-    try:
+    for attempt in range(2):
 
-        raw = yf.download(
+        try:
 
-            ticker,
-
-            period="5d",
-
-            interval="5m",
-
-            progress=False,
-
-            auto_adjust=False,
-
-            threads=False,
-        )
-
-        if raw is None or raw.empty:
-
-            return None
-
-        if isinstance(
-            raw.columns,
-            pd.MultiIndex,
-        ):
-
-            raw.columns = (
-                raw.columns
-                .get_level_values(0)
+            raw = yf.download(
+                ticker,
+                period="5d",
+                interval="5m",
+                progress=False,
+                auto_adjust=False,
+                threads=False,
             )
 
-        raw.columns = [
-            str(c).lower()
-            for c in raw.columns
-        ]
+            if raw is None or raw.empty:
 
-        required = (
-            "open",
-            "high",
-            "low",
-            "close",
-        )
+                time.sleep(0.5)
 
-        if any(
-            c not in raw.columns
-            for c in required
-        ):
+                continue
 
-            return None
+            if isinstance(
+                raw.columns,
+                pd.MultiIndex,
+            ):
 
-        if "volume" not in raw.columns:
+                raw.columns = (
+                    raw.columns
+                    .get_level_values(0)
+                )
 
-            raw["volume"] = 0
-
-        df = raw[
-            [
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
+            raw.columns = [
+                str(c).lower()
+                for c in raw.columns
             ]
-        ].copy()
 
-        for column in df.columns:
-
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce",
-            )
-
-        df = df.dropna(
-            subset=[
+            required = [
                 "open",
                 "high",
                 "low",
                 "close",
             ]
-        )
 
-        df = df[
-            ~df.index.duplicated(
-                keep="last"
+            if any(
+                col not in raw.columns
+                for col in required
+            ):
+
+                return None
+
+            if "volume" not in raw.columns:
+
+                raw["volume"] = 0
+
+            df = raw[
+                [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            ].copy()
+
+            for column in df.columns:
+
+                df[column] = pd.to_numeric(
+                    df[column],
+                    errors="coerce",
+                )
+
+            df = df.replace(
+                [math.inf, -math.inf],
+                pd.NA,
             )
-        ]
 
-        if len(df) < 80:
+            df = df.dropna(
+                subset=[
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                ]
+            )
 
-            return None
+            df = df[
+                ~df.index.duplicated(
+                    keep="last"
+                )
+            ]
 
-        return df
+            if len(df) < 80:
 
-    except Exception as exc:
+                return None
 
-        log.error(
-            "Data fetch failed %s: %s",
-            ticker,
-            exc,
-        )
+            return df
 
-        return None
+        except Exception as exc:
+
+            log.error(
+                "Data fetch failed %s: %s",
+                ticker,
+                exc,
+            )
+
+            time.sleep(0.5)
+
+    return None
 
 
 # ============================================================
-# RESAMPLE
+# RESAMPLING
 # ============================================================
 
-def resample(df, rule):
+def resample_ohlc(df, rule):
 
-    return (
-        df.resample(rule)
-        .agg({
+    result = df.resample(rule).agg(
+        {
             "open": "first",
             "high": "max",
             "low": "min",
             "close": "last",
             "volume": "sum",
-        })
-        .dropna(
-            subset=[
-                "open",
-                "high",
-                "low",
-                "close",
-            ]
-        )
+        }
+    )
+
+    return result.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
     )
 
 
@@ -761,113 +714,113 @@ def resample(df, rule):
 # REFRESH SYMBOL
 # ============================================================
 
-def refresh(symbol):
+def refresh_symbol(symbol):
 
-    base = fetch(
-        MARKETS[symbol]["data"]
-    )
+    ticker = MARKETS[symbol]["data"]
+
+    base = fetch_yahoo(ticker)
 
     if base is None:
 
         return None
 
-    result = {
+    frames = {
 
         "5M": base.copy(),
 
-        "15M": resample(
+        "15M": resample_ohlc(
             base,
             "15min",
         ),
 
-        "1H": resample(
+        "1H": resample_ohlc(
             base,
             "1h",
         ),
     }
 
     if any(
-        len(value) < 50
-        for value in result.values()
+        len(frame) < 50
+        for frame in frames.values()
     ):
 
         return None
 
     with cache_lock:
 
-        frames_cache[symbol] = result
+        frames_cache[symbol] = frames
 
         frames_time[symbol] = time.time()
 
-    return result
+    return frames
 
 
 # ============================================================
-# GET FRAMES
+# GET CACHED FRAMES
 # ============================================================
 
-def frames(symbol):
+def get_frames(symbol):
+
+    now = time.time()
 
     with cache_lock:
 
         cached = frames_cache.get(symbol)
 
-        cached_time = frames_time.get(
+        cached_at = frames_time.get(
             symbol,
             0,
         )
 
     if (
         cached is not None
-        and time.time() - cached_time
+        and now - cached_at
         < DATA_REFRESH_INTERVAL
     ):
 
         return cached
 
-    return refresh(symbol)
+    return refresh_symbol(symbol)
 
 
 # ============================================================
 # CANDLE HELPERS
 # ============================================================
 
-def body(candle):
+def candle_body(candle):
 
     return abs(
-        float(candle.close)
-        - float(candle.open)
+        float(candle["close"])
+        - float(candle["open"])
     )
 
 
-def bull(candle):
+def bullish(candle):
 
     return (
-        float(candle.close)
-        > float(candle.open)
+        float(candle["close"])
+        > float(candle["open"])
     )
 
 
-def bear(candle):
+def bearish(candle):
 
     return (
-        float(candle.close)
-        < float(candle.open)
+        float(candle["close"])
+        < float(candle["open"])
     )
 
 
-def avgbody(df, n=10):
+def average_body(df, length=10):
 
     value = (
-        (df.close - df.open)
-        .abs()
-        .tail(n)
-        .mean()
-    )
+        df["close"]
+        - df["open"]
+    ).abs().tail(length).mean()
 
     if pd.isna(value):
 
-        return 0
+        return 0.0
 
     return float(value)
 
@@ -876,42 +829,47 @@ def avgbody(df, n=10):
 # ATR
 # ============================================================
 
-def atr(df, n=14):
+def atr_value(df, period=14):
 
-    if len(df) < n + 2:
+    if len(df) < period + 2:
 
-        return 0
+        return 0.0
 
-    previous_close = df.close.shift(1)
+    high = df["high"].astype(float)
 
-    tr = pd.concat(
+    low = df["low"].astype(float)
 
+    close = df["close"].astype(float)
+
+    previous_close = close.shift(1)
+
+    true_range = pd.concat(
         [
-            df.high - df.low,
+            high - low,
 
             (
-                df.high
+                high
                 - previous_close
             ).abs(),
 
             (
-                df.low
+                low
                 - previous_close
             ).abs(),
         ],
-
         axis=1,
     ).max(axis=1)
 
     value = (
-        tr.rolling(n)
+        true_range
+        .rolling(period)
         .mean()
         .iloc[-1]
     )
 
     if pd.isna(value):
 
-        return 0
+        return 0.0
 
     return float(value)
 
@@ -920,15 +878,17 @@ def atr(df, n=14):
 # SWING HIGHS
 # ============================================================
 
-def highs(df):
+def swing_highs(df):
 
     result = []
 
-    if len(df) < (
+    minimum = (
         SWING_LEFT
         + SWING_RIGHT
         + 1
-    ):
+    )
+
+    if len(df) < minimum:
 
         return result
 
@@ -938,25 +898,21 @@ def highs(df):
     ):
 
         value = float(
-            df.high.iloc[i]
+            df["high"].iloc[i]
         )
 
-        left = float(
-            df.high.iloc[
-                i - SWING_LEFT:i
-            ].max()
-        )
+        left = df["high"].iloc[
+            i - SWING_LEFT:i
+        ]
 
-        right = float(
-            df.high.iloc[
-                i + 1:
-                i + SWING_RIGHT + 1
-            ].max()
-        )
+        right = df["high"].iloc[
+            i + 1:
+            i + SWING_RIGHT + 1
+        ]
 
         if (
-            value > left
-            and value >= right
+            value > float(left.max())
+            and value >= float(right.max())
         ):
 
             result.append(
@@ -970,15 +926,17 @@ def highs(df):
 # SWING LOWS
 # ============================================================
 
-def lows(df):
+def swing_lows(df):
 
     result = []
 
-    if len(df) < (
+    minimum = (
         SWING_LEFT
         + SWING_RIGHT
         + 1
-    ):
+    )
+
+    if len(df) < minimum:
 
         return result
 
@@ -988,25 +946,21 @@ def lows(df):
     ):
 
         value = float(
-            df.low.iloc[i]
+            df["low"].iloc[i]
         )
 
-        left = float(
-            df.low.iloc[
-                i - SWING_LEFT:i
-            ].min()
-        )
+        left = df["low"].iloc[
+            i - SWING_LEFT:i
+        ]
 
-        right = float(
-            df.low.iloc[
-                i + 1:
-                i + SWING_RIGHT + 1
-            ].min()
-        )
+        right = df["low"].iloc[
+            i + 1:
+            i + SWING_RIGHT + 1
+        ]
 
         if (
-            value < left
-            and value <= right
+            value < float(left.min())
+            and value <= float(right.min())
         ):
 
             result.append(
@@ -1020,22 +974,21 @@ def lows(df):
 # DEMAND ZONE
 # ============================================================
 
-def demand(df):
+def find_demand_zone(df):
 
     work = (
-        df.tail(
-            ZONE_LOOKBACK_1H
-        )
-        .reset_index(
-            drop=True
-        )
+        df.tail(ZONE_LOOKBACK_1H)
+        .reset_index(drop=True)
     )
-
-    average = avgbody(work)
 
     if len(work) < 15:
 
         return None
+
+    average = average_body(
+        work,
+        10,
+    )
 
     if average <= 0:
 
@@ -1050,26 +1003,27 @@ def demand(df):
 
         candle = work.iloc[i]
 
-        if not bull(candle):
+        if not bullish(candle):
 
             continue
 
         if (
-            body(candle)
-            < average
-            * DISPLACEMENT_BODY_MULT
+            candle_body(candle)
+            < average * DISPLACEMENT_BODY_MULT
         ):
 
             continue
 
         previous_high = float(
-            work.high.iloc[
+            work["high"]
+            .iloc[
                 max(0, i - 5):i
-            ].max()
+            ]
+            .max()
         )
 
         if (
-            float(candle.close)
+            float(candle["close"])
             <= previous_high
         ):
 
@@ -1077,22 +1031,23 @@ def demand(df):
 
         base = work.iloc[i - 1]
 
-        candidates.append({
+        candidates.append(
+            {
+                "low": min(
+                    float(base["open"]),
+                    float(base["close"]),
+                    float(base["low"]),
+                ),
 
-            "low": min(
-                float(base.open),
-                float(base.close),
-                float(base.low),
-            ),
+                "high": max(
+                    float(base["open"]),
+                    float(base["close"]),
+                    float(base["high"]),
+                ),
 
-            "high": max(
-                float(base.open),
-                float(base.close),
-                float(base.high),
-            ),
-
-            "index": i,
-        })
+                "index": i,
+            }
+        )
 
     return (
         candidates[-1]
@@ -1105,22 +1060,21 @@ def demand(df):
 # SUPPLY ZONE
 # ============================================================
 
-def supply(df):
+def find_supply_zone(df):
 
     work = (
-        df.tail(
-            ZONE_LOOKBACK_1H
-        )
-        .reset_index(
-            drop=True
-        )
+        df.tail(ZONE_LOOKBACK_1H)
+        .reset_index(drop=True)
     )
-
-    average = avgbody(work)
 
     if len(work) < 15:
 
         return None
+
+    average = average_body(
+        work,
+        10,
+    )
 
     if average <= 0:
 
@@ -1135,26 +1089,27 @@ def supply(df):
 
         candle = work.iloc[i]
 
-        if not bear(candle):
+        if not bearish(candle):
 
             continue
 
         if (
-            body(candle)
-            < average
-            * DISPLACEMENT_BODY_MULT
+            candle_body(candle)
+            < average * DISPLACEMENT_BODY_MULT
         ):
 
             continue
 
         previous_low = float(
-            work.low.iloc[
+            work["low"]
+            .iloc[
                 max(0, i - 5):i
-            ].min()
+            ]
+            .min()
         )
 
         if (
-            float(candle.close)
+            float(candle["close"])
             >= previous_low
         ):
 
@@ -1162,22 +1117,23 @@ def supply(df):
 
         base = work.iloc[i - 1]
 
-        candidates.append({
+        candidates.append(
+            {
+                "low": min(
+                    float(base["open"]),
+                    float(base["close"]),
+                    float(base["low"]),
+                ),
 
-            "low": min(
-                float(base.open),
-                float(base.close),
-                float(base.low),
-            ),
+                "high": max(
+                    float(base["open"]),
+                    float(base["close"]),
+                    float(base["high"]),
+                ),
 
-            "high": max(
-                float(base.open),
-                float(base.close),
-                float(base.high),
-            ),
-
-            "index": i,
-        })
+                "index": i,
+            }
+        )
 
     return (
         candidates[-1]
@@ -1187,10 +1143,10 @@ def supply(df):
 
 
 # ============================================================
-# PRICE IN ZONE
+# ZONE TEST
 # ============================================================
 
-def in_zone(
+def price_in_zone(
     price,
     zone,
     tolerance,
@@ -1211,38 +1167,28 @@ def in_zone(
 # APPROACH TO ZONE
 # ============================================================
 
-def approach(
+def approach_to_zone(
     price,
     zone,
-    atr_value,
+    atr,
     direction,
 ):
 
-    if (
-        zone is None
-        or atr_value <= 0
-    ):
+    if zone is None or atr <= 0:
 
         return False, None
 
     tolerance = (
-        atr_value
-        * ZONE_TOLERANCE_ATR
+        atr * ZONE_TOLERANCE_ATR
     )
 
     limit = (
-        atr_value
-        * PRE_SIGNAL_ATR
+        atr * PRE_SIGNAL_ATR
     )
 
     low = float(zone["low"])
 
     high = float(zone["high"])
-
-
-    # --------------------------------------------------------
-    # BUY
-    # --------------------------------------------------------
 
     if direction == "BUY":
 
@@ -1264,11 +1210,6 @@ def approach(
             distance <= limit,
             max(0.0, distance),
         )
-
-
-    # --------------------------------------------------------
-    # SELL
-    # --------------------------------------------------------
 
     if price > high + tolerance:
 
@@ -1294,7 +1235,10 @@ def approach(
 # LIQUIDITY SWEEP
 # ============================================================
 
-def sweep(df, direction):
+def liquidity_sweep(
+    df,
+    direction,
+):
 
     if len(df) < (
         LIQUIDITY_LOOKBACK + 3
@@ -1304,75 +1248,66 @@ def sweep(df, direction):
 
     end = len(df) - 2
 
+    start = (
+        end - LIQUIDITY_LOOKBACK
+    )
+
     previous = df.iloc[
-        end - LIQUIDITY_LOOKBACK:
-        end
+        start:end
     ]
 
     candle = df.iloc[end]
 
     previous_high = float(
-        previous.high.max()
+        previous["high"].max()
     )
 
     previous_low = float(
-        previous.low.min()
+        previous["low"].min()
     )
-
 
     if direction == "BUY":
 
         swept = (
-            float(candle.low)
+            float(candle["low"])
             < previous_low
         )
 
         reclaimed = (
-            float(candle.close)
+            float(candle["close"])
             > previous_low
         )
 
-        valid = (
-            swept
-            and reclaimed
-        )
+        valid = swept and reclaimed
 
         return (
             valid,
-            previous_low
-            if valid
-            else None,
+            previous_low if valid else None,
         )
 
-
     swept = (
-        float(candle.high)
+        float(candle["high"])
         > previous_high
     )
 
     reclaimed = (
-        float(candle.close)
+        float(candle["close"])
         < previous_high
     )
 
-    valid = (
-        swept
-        and reclaimed
-    )
+    valid = swept and reclaimed
 
     return (
         valid,
-        previous_high
-        if valid
-        else None,
+        previous_high if valid else None,
     )
 
 
 # ============================================================
-# REJECTION
+# REJECTION CANDLE
 # ============================================================
 
-def rejection(
+def rejection_candle(
     df,
     direction,
 ):
@@ -1383,65 +1318,46 @@ def rejection(
 
     candle = df.iloc[-2]
 
-    op = float(candle.open)
+    op = float(candle["open"])
 
-    close = float(candle.close)
+    close = float(candle["close"])
 
-    high = float(candle.high)
+    high = float(candle["high"])
 
-    low = float(candle.low)
+    low = float(candle["low"])
 
-    candle_body = abs(
-        close - op
-    )
+    body = abs(close - op)
 
-    total_range = high - low
+    total = high - low
 
-    if (
-        candle_body <= 0
-        or total_range <= 0
-    ):
+    if body <= 0 or total <= 0:
 
         return False
 
     upper_wick = (
-        high
-        - max(op, close)
+        high - max(op, close)
     )
 
     lower_wick = (
-        min(op, close)
-        - low
+        min(op, close) - low
     )
-
 
     if direction == "BUY":
 
         return (
             lower_wick
-            >= candle_body
-            * REJECTION_WICK_RATIO
-
+            >= body * REJECTION_WICK_RATIO
             and close > op
-
-            and (
-                (close - low)
-                / total_range
-            ) >= 0.60
+            and (close - low) / total
+            >= 0.60
         )
-
 
     return (
         upper_wick
-        >= candle_body
-        * REJECTION_WICK_RATIO
-
+        >= body * REJECTION_WICK_RATIO
         and close < op
-
-        and (
-            (high - close)
-            / total_range
-        ) >= 0.60
+        and (high - close) / total
+        >= 0.60
     )
 
 
@@ -1460,8 +1376,11 @@ def displacement(
 
     candle = df.iloc[-2]
 
-    average = avgbody(
-        df.iloc[:-1]
+    previous = df.iloc[:-1]
+
+    average = average_body(
+        previous,
+        10,
     )
 
     if average <= 0:
@@ -1469,25 +1388,24 @@ def displacement(
         return False
 
     if (
-        body(candle)
-        < average
-        * DISPLACEMENT_BODY_MULT
+        candle_body(candle)
+        < average * DISPLACEMENT_BODY_MULT
     ):
 
         return False
 
     if direction == "BUY":
 
-        return bull(candle)
+        return bullish(candle)
 
-    return bear(candle)
+    return bearish(candle)
 
 
 # ============================================================
 # BOS
 # ============================================================
 
-def bos(
+def break_of_structure(
     df,
     direction,
 ):
@@ -1505,26 +1423,25 @@ def bos(
         end - 1
     ]
 
-
     if direction == "BUY":
 
         level = float(
-            previous.high.max()
+            previous["high"].max()
         )
 
         valid = (
-            float(candle.close)
+            float(candle["close"])
             > level
         )
 
     else:
 
         level = float(
-            previous.low.min()
+            previous["low"].min()
         )
 
         valid = (
-            float(candle.close)
+            float(candle["close"])
             < level
         )
 
@@ -1538,7 +1455,7 @@ def bos(
 # CHOCH
 # ============================================================
 
-def choch(
+def change_of_character(
     df,
     direction,
 ):
@@ -1549,28 +1466,26 @@ def choch(
 
         return False
 
-    swing_high = highs(work)
+    highs = swing_highs(work)
 
-    swing_low = lows(work)
-
+    lows = swing_lows(work)
 
     if direction == "BUY":
 
         return bool(
-            swing_high
+            highs
             and float(
-                work.close.iloc[-1]
+                work["close"].iloc[-1]
             )
-            > swing_high[-1][1]
+            > highs[-1][1]
         )
-
 
     return bool(
-        swing_low
+        lows
         and float(
-            work.close.iloc[-1]
+            work["close"].iloc[-1]
         )
-        < swing_low[-1][1]
+        < lows[-1][1]
     )
 
 
@@ -1578,16 +1493,16 @@ def choch(
 # RETEST
 # ============================================================
 
-def retest(
+def retest_level(
     df,
     direction,
     level,
-    atr_value,
+    atr,
 ):
 
     if (
         level is None
-        or atr_value <= 0
+        or atr <= 0
     ):
 
         return False
@@ -1595,27 +1510,22 @@ def retest(
     candle = df.iloc[-2]
 
     tolerance = (
-        atr_value
-        * RETEST_TOLERANCE_ATR
+        atr * RETEST_TOLERANCE_ATR
     )
-
 
     if direction == "BUY":
 
         return (
-            float(candle.low)
+            float(candle["low"])
             <= level + tolerance
-
-            and float(candle.close)
+            and float(candle["close"])
             >= level
         )
 
-
     return (
-        float(candle.high)
+        float(candle["high"])
         >= level - tolerance
-
-        and float(candle.close)
+        and float(candle["close"])
         <= level
     )
 
@@ -1624,89 +1534,99 @@ def retest(
 # PRE-SIGNAL SETUP
 # ============================================================
 
-def pre_setup(
+def pre_signal_setup(
     frames,
     direction,
 ):
 
-    atr_1h = atr(
+    atr = atr_value(
         frames["1H"]
     )
 
-    price = float(
-        frames["5M"].close.iloc[-1]
-    )
-
-    zone = (
-        demand(frames["1H"])
-        if direction == "BUY"
-        else supply(frames["1H"])
-    )
-
-    valid, distance = approach(
-        price,
-        zone,
-        atr_1h,
-        direction,
-    )
-
-    if not valid:
+    if atr <= 0:
 
         return {
             "valid": False
         }
 
-
-    c1 = float(
-        frames["5M"].close.iloc[-1]
+    price = float(
+        frames["5M"]["close"].iloc[-1]
     )
 
-    c2 = float(
-        frames["5M"].close.iloc[-2]
+    if direction == "BUY":
+
+        zone = find_demand_zone(
+            frames["1H"]
+        )
+
+    else:
+
+        zone = find_supply_zone(
+            frames["1H"]
+        )
+
+    approaching, distance = (
+        approach_to_zone(
+            price,
+            zone,
+            atr,
+            direction,
+        )
     )
 
-    c3 = float(
-        frames["5M"].close.iloc[-3]
+    if not approaching:
+
+        return {
+            "valid": False
+        }
+
+    closes = (
+        frames["5M"]["close"]
+        .iloc[-3:]
+        .astype(float)
+        .tolist()
     )
 
+    if len(closes) < 3:
+
+        return {
+            "valid": False
+        }
+
+    c1, c2, c3 = closes
 
     if direction == "BUY":
 
         moving_toward = (
-            c1 < c2 < c3
+            c1 <= c2 <= c3
         )
 
     else:
 
         moving_toward = (
-            c1 > c2 > c3
+            c1 >= c2 >= c3
         )
 
+    in_or_near = price_in_zone(
+        price,
+        zone,
+        atr * ZONE_TOLERANCE_ATR,
+    )
 
-    if not moving_toward:
+    if (
+        not moving_toward
+        and not in_or_near
+    ):
 
-        if not in_zone(
-            price,
-            zone,
-            atr_1h
-            * ZONE_TOLERANCE_ATR,
-        ):
-
-            return {
-                "valid": False
-            }
-
+        return {
+            "valid": False
+        }
 
     return {
-
         "valid": True,
-
         "zone": zone,
-
         "distance": distance,
-
         "price": price,
-
         "direction": direction,
     }
 
@@ -1720,62 +1640,72 @@ def watch_setup(
     direction,
 ):
 
-    swept, sweep_level = sweep(
-        frames["15M"],
-        direction,
+    swept, sweep_level = (
+        liquidity_sweep(
+            frames["15M"],
+            direction,
+        )
     )
 
-    bos_valid, bos_level = bos(
-        frames["15M"],
-        direction,
+    bos_ok, bos_level = (
+        break_of_structure(
+            frames["15M"],
+            direction,
+        )
     )
 
-    choch_valid = choch(
-        frames["15M"],
-        direction,
+    choch_ok = (
+        change_of_character(
+            frames["15M"],
+            direction,
+        )
     )
 
-    rejection_valid = rejection(
-        frames["15M"],
-        direction,
+    rejection = (
+        rejection_candle(
+            frames["15M"],
+            direction,
+        )
     )
 
-    displacement_valid = displacement(
-        frames["15M"],
-        direction,
+    displacement_ok = (
+        displacement(
+            frames["15M"],
+            direction,
+        )
     )
 
+    score = 0
 
-    score = (
+    if swept:
+        score += 2
 
-        (2 if swept else 0)
+    if bos_ok:
+        score += 3
 
-        + (3 if bos_valid else 0)
+    if choch_ok:
+        score += 2
 
-        + (2 if choch_valid else 0)
+    if rejection:
+        score += 1
 
-        + (1 if rejection_valid else 0)
+    if displacement_ok:
+        score += 1
 
-        + (1 if displacement_valid else 0)
+    valid = (
+        swept
+        or bos_ok
+        or choch_ok
     )
-
 
     return {
-
-        "valid": bool(
-            swept
-            or bos_valid
-            or choch_valid
-        ),
-
+        "valid": valid,
         "score": score,
-
         "level": (
             bos_level
-            if bos_valid
+            if bos_ok
             else sweep_level
         ),
-
         "sweep": sweep_level,
     }
 
@@ -1789,28 +1719,32 @@ def trade_setup(
     direction,
 ):
 
-    atr_1h = atr(
+    atr_1h = atr_value(
         frames["1H"]
     )
 
     price = float(
-        frames["5M"].close.iloc[-1]
+        frames["5M"]["close"].iloc[-1]
     )
 
-    zone = (
-        demand(frames["1H"])
-        if direction == "BUY"
-        else supply(frames["1H"])
-    )
+    if direction == "BUY":
 
+        zone = find_demand_zone(
+            frames["1H"]
+        )
+
+    else:
+
+        zone = find_supply_zone(
+            frames["1H"]
+        )
 
     if (
         atr_1h <= 0
-        or not in_zone(
+        or not price_in_zone(
             price,
             zone,
-            atr_1h
-            * ZONE_TOLERANCE_ATR,
+            atr_1h * ZONE_TOLERANCE_ATR,
         )
     ):
 
@@ -1819,152 +1753,513 @@ def trade_setup(
             "score": 0,
         }
 
-
-    # --------------------------------------------------------
-    # REVERSAL
-    # --------------------------------------------------------
-
-    swept, sweep_level = sweep(
-        frames["15M"],
-        direction,
+    swept, sweep_level = (
+        liquidity_sweep(
+            frames["15M"],
+            direction,
+        )
     )
 
-    rejection_valid = rejection(
-        frames["15M"],
-        direction,
+    rejection = (
+        rejection_candle(
+            frames["15M"],
+            direction,
+        )
     )
 
-    displacement_valid = displacement(
-        frames["15M"],
-        direction,
+    displacement_ok = (
+        displacement(
+            frames["15M"],
+            direction,
+        )
     )
 
-    bos_valid, bos_level = bos(
-        frames["15M"],
-        direction,
+    bos_ok, bos_level = (
+        break_of_structure(
+            frames["15M"],
+            direction,
+        )
     )
 
-    choch_valid = choch(
-        frames["15M"],
-        direction,
+    choch_ok = (
+        change_of_character(
+            frames["15M"],
+            direction,
+        )
     )
 
+    score = 2
 
-    score = (
+    if swept:
+        score += 2
 
-        2
+    if rejection:
+        score += 1
 
-        + (2 if swept else 0)
+    if bos_ok:
+        score += 2
 
-        + (1 if rejection_valid else 0)
+    if choch_ok:
+        score += 1
 
-        + (2 if bos_valid else 0)
+    if displacement_ok:
+        score += 1
 
-        + (1 if choch_valid else 0)
-
-        + (1 if displacement_valid else 0)
-    )
-
-
-    if (
+    reversal_valid = (
         swept
-        and rejection_valid
-        and (bos_valid or choch_valid)
+        and rejection
+        and (bos_ok or choch_ok)
         and score >= MIN_PA_SCORE
-    ):
+    )
+
+    if reversal_valid:
 
         return {
-
             "valid": True,
-
             "score": score,
-
             "level": (
                 bos_level
-                if bos_valid
+                if bos_ok
                 else sweep_level
             ),
-
             "sweep": sweep_level,
+            "setup_type": "LIQUIDITY REVERSAL",
         }
 
-
     # --------------------------------------------------------
-    # BREAKOUT + RETEST
+    # BREAKOUT / RETEST
     # --------------------------------------------------------
 
-    atr_5m = atr(
+    atr_5m = atr_value(
         frames["5M"]
     )
 
-    bos_valid, level = bos(
-        frames["15M"],
-        direction,
+    bos_ok, level = (
+        break_of_structure(
+            frames["15M"],
+            direction,
+        )
     )
 
-    displacement_valid = displacement(
-        frames["15M"],
-        direction,
+    displacement_ok = (
+        displacement(
+            frames["15M"],
+            direction,
+        )
     )
 
-    retest_valid = retest(
+    retest = retest_level(
         frames["5M"],
         direction,
         level,
         atr_5m,
     )
 
-    trigger_valid = rejection(
+    trigger = rejection_candle(
         frames["5M"],
         direction,
     )
 
+    breakout_score = 0
 
-    score = (
+    if bos_ok:
+        breakout_score += 3
 
-        (3 if bos_valid else 0)
+    if displacement_ok:
+        breakout_score += 2
 
-        + (2 if displacement_valid else 0)
+    if retest:
+        breakout_score += 2
 
-        + (2 if retest_valid else 0)
+    if trigger:
+        breakout_score += 2
 
-        + (2 if trigger_valid else 0)
+    breakout_valid = (
+        bos_ok
+        and displacement_ok
+        and retest
+        and trigger
+        and breakout_score >= 8
     )
 
-
-    if (
-        bos_valid
-        and displacement_valid
-        and retest_valid
-        and trigger_valid
-        and score >= 8
-    ):
+    if breakout_valid:
 
         return {
-
             "valid": True,
-
-            "score": score,
-
+            "score": breakout_score,
             "level": level,
-
             "sweep": None,
+            "setup_type": "BREAKOUT + RETEST",
         }
 
-
     return {
-
         "valid": False,
-
         "score": 0,
     }
 
 
 # ============================================================
-# STOP LOSS
+# ZONE FINGERPRINT
 # ============================================================
 
-def sl_calc(
+def zone_id(zone):
+
+    if zone is None:
+
+        return None
+
+    return (
+        round(float(zone["low"]), 6),
+        round(float(zone["high"]), 6),
+    )
+
+
+# ============================================================
+# SETUP KEY
+# ============================================================
+
+def setup_key(
+    symbol,
+    direction,
+):
+
+    return f"{symbol}:{direction}"
+
+
+# ============================================================
+# PRE FINGERPRINT
+#
+# IMPORTANT:
+# We deliberately do NOT use current price as the fingerprint.
+# Otherwise a changing price would create a new alert every scan.
+# ============================================================
+
+def pre_fingerprint(setup):
+
+    return zone_id(
+        setup.get("zone")
+    )
+
+
+# ============================================================
+# WATCH FINGERPRINT
+#
+# Rounded structure values prevent tiny numerical changes from
+# being treated as completely new setups.
+# ============================================================
+
+def watch_fingerprint(setup):
+
+    level = setup.get("level")
+
+    sweep = setup.get("sweep")
+
+    level_id = (
+        round(float(level), 4)
+        if level is not None
+        else None
+    )
+
+    sweep_id = (
+        round(float(sweep), 4)
+        if sweep is not None
+        else None
+    )
+
+    return (
+        level_id,
+        sweep_id,
+    )
+
+
+# ============================================================
+# PRE ALERT
+# ============================================================
+
+def process_pre_signal(
+    symbol,
+    frames,
+    session_name,
+):
+
+    now = time.time()
+
+    for direction in (
+        "BUY",
+        "SELL",
+    ):
+
+        setup = pre_signal_setup(
+            frames,
+            direction,
+        )
+
+        key = setup_key(
+            symbol,
+            direction,
+        )
+
+        # ----------------------------------------------------
+        # SETUP INVALID
+        # ----------------------------------------------------
+
+        if not setup["valid"]:
+
+            old = pre_state.get(key)
+
+            if old is not None:
+
+                # Remove old lock only after the setup has
+                # genuinely disappeared for the cooldown.
+                if (
+                    now - old["last_seen"]
+                    >= PRE_SIGNAL_COOLDOWN
+                ):
+
+                    pre_state.pop(
+                        key,
+                        None,
+                    )
+
+            continue
+
+        fingerprint = pre_fingerprint(
+            setup
+        )
+
+        old = pre_state.get(key)
+
+        # ----------------------------------------------------
+        # SAME ZONE = NEVER REPEAT
+        # ----------------------------------------------------
+
+        if (
+            old is not None
+            and old["fingerprint"]
+            == fingerprint
+        ):
+
+            # Keep the setup alive.
+            old["last_seen"] = now
+
+            continue
+
+        # ----------------------------------------------------
+        # DIFFERENT ZONE
+        #
+        # Still enforce cooldown so a rapidly changing zone
+        # cannot generate messages every second.
+        # ----------------------------------------------------
+
+        if (
+            old is not None
+            and now - old["alert_time"]
+            < PRE_SIGNAL_COOLDOWN
+        ):
+
+            old["last_seen"] = now
+
+            continue
+
+        cfg = MARKETS[symbol]
+
+        decimals = cfg["decimals"]
+
+        emoji = (
+            "🟢"
+            if direction == "BUY"
+            else "🔴"
+        )
+
+        zone_name = (
+            "DEMAND"
+            if direction == "BUY"
+            else "SUPPLY"
+        )
+
+        zone = setup["zone"]
+
+        message = (
+            "⚠️ *ADVANCE PRE-SIGNAL*\n"
+            f"*{cfg['execution']}* | "
+            f"{session_name}\n\n"
+
+            f"{emoji} *Potential "
+            f"{direction} setup approaching "
+            f"{zone_name}*\n"
+
+            f"📍 Current price: "
+            f"{setup['price']:,.{decimals}f}\n"
+
+            f"📦 Zone: "
+            f"{zone['low']:,.{decimals}f}"
+            f" → "
+            f"{zone['high']:,.{decimals}f}\n"
+
+            f"📏 Distance: "
+            f"{setup['distance']:,.{decimals}f}\n\n"
+
+            "👀 WAIT — NOT A TRADE YET\n"
+
+            "Required next:\n"
+            "• 15M liquidity sweep / structure shift\n"
+            "• 5M confirmation\n"
+            f"• Adaptive RR target ≥ {MIN_RR:.2f}R\n\n"
+
+            "🧭 *Advance warning only*"
+        )
+
+        send_telegram(
+            message
+        )
+
+        pre_state[key] = {
+            "alert_time": now,
+            "last_seen": now,
+            "fingerprint": fingerprint,
+            "session": session_name,
+        }
+
+        log.info(
+            "PRE LOCKED | %s | %s | zone=%s",
+            symbol,
+            direction,
+            fingerprint,
+        )
+
+
+# ============================================================
+# WATCH ALERT
+# ============================================================
+
+def process_watch(
+    symbol,
+    frames,
+    session_name,
+):
+
+    now = time.time()
+
+    price = float(
+        frames["5M"]["close"].iloc[-1]
+    )
+
+    for direction in (
+        "BUY",
+        "SELL",
+    ):
+
+        setup = watch_setup(
+            frames,
+            direction,
+        )
+
+        if not setup["valid"]:
+
+            continue
+
+        key = setup_key(
+            symbol,
+            direction,
+        )
+
+        fingerprint = watch_fingerprint(
+            setup
+        )
+
+        old = watch_state.get(key)
+
+        # ----------------------------------------------------
+        # SAME STRUCTURE
+        # ----------------------------------------------------
+
+        if (
+            old is not None
+            and old["fingerprint"]
+            == fingerprint
+        ):
+
+            old["last_seen"] = now
+
+            continue
+
+        # ----------------------------------------------------
+        # GLOBAL WATCH COOLDOWN
+        #
+        # Prevents continuously changing structure from
+        # generating a message every second.
+        # ----------------------------------------------------
+
+        if (
+            old is not None
+            and now - old["alert_time"]
+            < WATCH_COOLDOWN
+        ):
+
+            old["last_seen"] = now
+
+            continue
+
+        cfg = MARKETS[symbol]
+
+        decimals = cfg["decimals"]
+
+        level = setup.get(
+            "level"
+        )
+
+        if level is None:
+
+            structure_text = "forming"
+
+        else:
+
+            structure_text = (
+                f"{float(level):,.{decimals}f}"
+            )
+
+        message = (
+            f"👀 *PA WATCH — "
+            f"{cfg['execution']}*\n\n"
+
+            f"*Direction:* {direction}\n"
+
+            f"*Price:* "
+            f"{price:,.{decimals}f}\n"
+
+            f"*Structure:* "
+            f"{structure_text}\n"
+
+            "*Status:* 15M structure forming — "
+            "wait for 5M confirmation\n"
+
+            f"*Session:* {session_name}"
+        )
+
+        send_telegram(
+            message
+        )
+
+        watch_state[key] = {
+            "alert_time": now,
+            "last_seen": now,
+            "fingerprint": fingerprint,
+            "session": session_name,
+        }
+
+        log.info(
+            "WATCH LOCKED | %s | %s | setup=%s",
+            symbol,
+            direction,
+            fingerprint,
+        )
+
+
+# ============================================================
+# ADAPTIVE STOP LOSS
+# ============================================================
+
+def calculate_sl(
     symbol,
     direction,
     entry,
@@ -1974,35 +2269,37 @@ def sl_calc(
 
     config = MARKETS[symbol]
 
-    atr_value = max(
-
-        atr(frames["5M"]),
-
-        atr(frames["15M"]),
+    atr_5m = atr_value(
+        frames["5M"]
     )
 
-    if atr_value <= 0:
+    atr_15m = atr_value(
+        frames["15M"]
+    )
+
+    volatility = max(
+        atr_5m,
+        atr_15m,
+    )
+
+    if volatility <= 0:
 
         return None
 
-
     buffer = max(
-
         config["min_sl"]
         * config["sl_buffer"],
 
-        atr_value * 0.10,
+        volatility * 0.10,
     )
 
-
-    sweep_level = setup.get(
+    sweep = setup.get(
         "sweep"
     )
 
-    structure_level = setup.get(
+    level = setup.get(
         "level"
     )
-
 
     if direction == "BUY":
 
@@ -2011,24 +2308,28 @@ def sl_calc(
             - config["min_sl"]
         ]
 
-        if sweep_level is not None:
+        if sweep is not None:
 
             candidates.append(
-                float(sweep_level)
+                float(sweep)
                 - buffer
             )
 
-        if structure_level is not None:
+        if level is not None:
 
             candidates.append(
-                float(structure_level)
+                float(level)
                 - buffer
             )
 
-        sl = min(candidates)
+        stop_loss = min(
+            candidates
+        )
 
-        distance = entry - sl
-
+        distance = (
+            entry
+            - stop_loss
+        )
 
     else:
 
@@ -2037,32 +2338,33 @@ def sl_calc(
             + config["min_sl"]
         ]
 
-        if sweep_level is not None:
+        if sweep is not None:
 
             candidates.append(
-                float(sweep_level)
+                float(sweep)
                 + buffer
             )
 
-        if structure_level is not None:
+        if level is not None:
 
             candidates.append(
-                float(structure_level)
+                float(level)
                 + buffer
             )
 
-        sl = max(candidates)
+        stop_loss = max(
+            candidates
+        )
 
-        distance = sl - entry
-
+        distance = (
+            stop_loss
+            - entry
+        )
 
     max_sl = max(
-
-        config["min_sl"] * 5,
-
-        atr_value * 2,
+        config["min_sl"] * 5.0,
+        volatility * 2.0,
     )
-
 
     if (
         distance <= 0
@@ -2071,59 +2373,70 @@ def sl_calc(
 
         return None
 
-
-    return sl, distance
+    return (
+        stop_loss,
+        distance,
+    )
 
 
 # ============================================================
-# TARGET ENGINE
+# STRUCTURE TARGET
 # ============================================================
 
-def target(
+def adaptive_target(
     frames,
     direction,
     entry,
-    stop_distance,
+    sl_distance,
 ):
+
+    if sl_distance <= 0:
+
+        return (
+            None,
+            0.0,
+            "INVALID",
+        )
+
+    minimum_distance = (
+        sl_distance * MIN_RR
+    )
+
+    maximum_distance = (
+        sl_distance * MAX_RR
+    )
 
     levels = []
 
-
-    for dataframe in (
-
-        frames["5M"],
-
-        frames["15M"],
-
-        frames["1H"],
+    for timeframe in (
+        "5M",
+        "15M",
+        "1H",
     ):
 
-        swing_levels = (
+        df = frames[timeframe]
 
-            highs(dataframe)
-            if direction == "BUY"
-            else lows(dataframe)
-        )
+        if direction == "BUY":
 
+            levels.extend(
+                [
+                    value
+                    for _, value
+                    in swing_highs(df)
+                    if value > entry
+                ]
+            )
 
-        for _, value in swing_levels:
+        else:
 
-            if direction == "BUY":
-
-                if value > entry:
-
-                    levels.append(
-                        value
-                    )
-
-            else:
-
-                if value < entry:
-
-                    levels.append(
-                        value
-                    )
-
+            levels.extend(
+                [
+                    value
+                    for _, value
+                    in swing_lows(df)
+                    if value < entry
+                ]
+            )
 
     levels = sorted(
         set(
@@ -2135,135 +2448,105 @@ def target(
         )
     )
 
-
-    minimum_distance = (
-        stop_distance
-        * MIN_RR
-    )
-
-    maximum_distance = (
-        stop_distance
-        * MAX_RR
-    )
-
-
     if direction == "BUY":
 
         valid = [
-
-            value
-
-            for value in levels
-
+            level
+            for level in levels
             if (
                 entry
                 + minimum_distance
-                <= value
-                <= entry
+                <= level
+                <=
+                entry
                 + maximum_distance
             )
         ]
 
-    else:
+        if valid:
 
-        valid = [
-
-            value
-
-            for value in levels
-
-            if (
-                entry
-                - maximum_distance
-                <= value
-                <= entry
-                - minimum_distance
+            target = max(
+                valid
             )
+
+            rr = (
+                target - entry
+            ) / sl_distance
+
+            return (
+                target,
+                rr,
+                "STRUCTURE",
+            )
+
+        beyond = [
+            level
+            for level in levels
+            if level
+            > entry + minimum_distance
         ]
 
+        if beyond:
+
+            return (
+                entry + maximum_distance,
+                MAX_RR,
+                "4R-CAPPED",
+            )
+
+        return (
+            entry + minimum_distance,
+            MIN_RR,
+            "MIN-RR",
+        )
+
+    valid = [
+        level
+        for level in levels
+        if (
+            entry
+            - maximum_distance
+            <= level
+            <=
+            entry
+            - minimum_distance
+        )
+    ]
 
     if valid:
 
-        target_price = (
-            max(valid)
-            if direction == "BUY"
-            else min(valid)
+        target = min(
+            valid
         )
-
 
         rr = (
-
-            (
-                target_price
-                - entry
-            )
-            / stop_distance
-
-            if direction == "BUY"
-
-            else
-
-            (
-                entry
-                - target_price
-            )
-            / stop_distance
-        )
-
+            entry - target
+        ) / sl_distance
 
         return (
-            target_price,
+            target,
             rr,
             "STRUCTURE",
         )
 
-
-    beyond = (
-
-        [
-            value
-            for value in levels
-            if value
-            > entry + minimum_distance
-        ]
-
-        if direction == "BUY"
-
-        else
-
-        [
-            value
-            for value in levels
-            if value
-            < entry - minimum_distance
-        ]
-    )
-
+    beyond = [
+        level
+        for level in levels
+        if level
+        < entry - minimum_distance
+    ]
 
     if beyond:
 
         return (
-
-            entry + maximum_distance
-            if direction == "BUY"
-            else
             entry - maximum_distance,
-
             MAX_RR,
-
             "4R-CAPPED",
         )
 
-
     return (
-
-        entry + minimum_distance
-        if direction == "BUY"
-        else
         entry - minimum_distance,
-
         MIN_RR,
-
         "MIN-RR",
     )
 
@@ -2272,36 +2555,34 @@ def target(
 # LOT SIZE
 # ============================================================
 
-def lot(
+def calculate_lot(
     symbol,
-    stop_distance,
+    sl_distance,
 ):
 
-    if stop_distance <= 0:
+    if sl_distance <= 0:
 
         return 0.0
+
+    dollar_per_point = (
+        DOLLAR_PER_POINT[symbol]
+    )
 
     raw = (
         RISK_PER_TRADE
         / (
-            stop_distance
-            * DPP[symbol]
+            sl_distance
+            * dollar_per_point
         )
     )
 
     cap = LOT_CAP[symbol]
 
-
     if symbol in {
-
         "NIFTY50",
-
         "BANKNIFTY",
-
         "SENSEX",
-
         "RELIANCE",
-
         "TCS",
     }:
 
@@ -2317,9 +2598,7 @@ def lot(
             )
         )
 
-
     return round(
-
         max(
             0.01,
             min(
@@ -2327,395 +2606,35 @@ def lot(
                 cap,
             ),
         ),
-
         3,
     )
 
 
 # ============================================================
-# ZONE ID
-#
-# This is the main anti-spam mechanism.
+# TRADE DUPLICATE PROTECTION
 # ============================================================
 
-def zone_id(zone):
-
-    if zone is None:
-
-        return None
-
-    return (
-
-        round(
-            float(zone["low"]),
-            8,
-        ),
-
-        round(
-            float(zone["high"]),
-            8,
-        ),
-    )
-
-
-# ============================================================
-# SIGNAL KEY
-# ============================================================
-
-def signal_key(
+def trade_allowed(
     symbol,
     direction,
-):
-
-    return (
-        f"{symbol}:{direction}"
-    )
-
-
-# ============================================================
-# PRE SIGNAL PROCESS
-# ============================================================
-
-def process_pre(
-    symbol,
-    frames_data,
-    current_session,
+    setup_type,
 ):
 
     now = time.time()
 
-
-    for direction in (
-        "BUY",
-        "SELL",
-    ):
-
-        setup = pre_setup(
-            frames_data,
-            direction,
-        )
-
-
-        key = signal_key(
-            symbol,
-            direction,
-        )
-
-
-        # ----------------------------------------------------
-        # No longer valid
-        # ----------------------------------------------------
-
-        if not setup["valid"]:
-
-            old = pre_state.get(
-                key
-            )
-
-            if (
-                old
-                and
-                now - old["time"]
-                >= PRE_SIGNAL_COOLDOWN
-            ):
-
-                pre_state.pop(
-                    key,
-                    None,
-                )
-
-            continue
-
-
-        current_zone_id = zone_id(
-            setup["zone"]
-        )
-
-
-        old = pre_state.get(
-            key
-        )
-
-
-        # ----------------------------------------------------
-        # MAIN ANTI-SPAM LOCK
-        #
-        # Same symbol + direction +
-        # same zone = NO NEW MESSAGE
-        # ----------------------------------------------------
-
-        if (
-            old
-            and
-            old["zone_id"]
-            == current_zone_id
-        ):
-
-            continue
-
-
-        config = MARKETS[symbol]
-
-        decimals = config[
-            "decimals"
-        ]
-
-        emoji = (
-            "🟢"
-            if direction == "BUY"
-            else "🔴"
-        )
-
-        zone_name = (
-            "DEMAND"
-            if direction == "BUY"
-            else "SUPPLY"
-        )
-
-
-        message = (
-
-            "⚠️ *ADVANCE PRE-SIGNAL*\n"
-
-            f"*{config['execution']}* "
-            f"| {current_session}\n\n"
-
-            f"{emoji} *Potential "
-            f"{direction} setup approaching "
-            f"{zone_name}*\n"
-
-            f"📍 Current price: "
-            f"{setup['price']:,.{decimals}f}\n"
-
-            f"📦 Zone: "
-            f"{setup['zone']['low']:,.{decimals}f}"
-            f" → "
-            f"{setup['zone']['high']:,.{decimals}f}\n"
-
-            f"📏 Distance: "
-            f"{setup['distance']:,.{decimals}f}\n\n"
-
-            "👀 WAIT — NOT A TRADE YET\n"
-
-            "Required next:\n"
-
-            "• 15M liquidity sweep / "
-            "structure shift\n"
-
-            "• 5M confirmation\n"
-
-            f"• Adaptive RR target ≥ "
-            f"{MIN_RR:.2f}R\n\n"
-
-            "🧭 *Advance warning only*"
-        )
-
-
-        tg(message)
-
-
-        # ----------------------------------------------------
-        # LOCK
-        # ----------------------------------------------------
-
-        pre_state[key] = {
-
-            "time": now,
-
-            "zone_id":
-                current_zone_id,
-
-            "session":
-                current_session,
-        }
-
-
-        log.info(
-
-            "PRE LOCKED %s %s zone=%s",
-
-            symbol,
-
-            direction,
-
-            current_zone_id,
-        )
-
-
-# ============================================================
-# WATCH PROCESS
-# ============================================================
-
-def process_watch(
-    symbol,
-    frames_data,
-    current_session,
-):
-
-    now = time.time()
-
-    price = float(
-        frames_data["5M"]
-        .close
-        .iloc[-1]
+    last_time = last_trade.get(
+        symbol,
+        0,
     )
 
-
-    for direction in (
-        "BUY",
-        "SELL",
+    if (
+        now - last_time
+        < TRADE_SIGNAL_COOLDOWN
     ):
 
-        setup = watch_setup(
-            frames_data,
-            direction,
-        )
+        return False
 
-
-        if not setup["valid"]:
-
-            continue
-
-
-        key = signal_key(
-            symbol,
-            direction,
-        )
-
-
-        level_id = (
-
-            round(
-                float(
-                    setup["level"]
-                ),
-                8,
-            )
-
-            if setup.get("level")
-            is not None
-
-            else None
-        )
-
-
-        sweep_id = (
-
-            round(
-                float(
-                    setup["sweep"]
-                ),
-                8,
-            )
-
-            if setup.get("sweep")
-            is not None
-
-            else None
-        )
-
-
-        setup_id = (
-            level_id,
-            sweep_id,
-        )
-
-
-        old = watch_state.get(
-            key
-        )
-
-
-        # ----------------------------------------------------
-        # SAME STRUCTURE
-        # ----------------------------------------------------
-
-        if (
-            old
-            and old["setup_id"]
-            == setup_id
-        ):
-
-            continue
-
-
-        # ----------------------------------------------------
-        # COOLDOWN
-        # ----------------------------------------------------
-
-        if (
-            old
-            and
-            now - old["time"]
-            < WATCH_COOLDOWN
-        ):
-
-            continue
-
-
-        config = MARKETS[symbol]
-
-        decimals = config[
-            "decimals"
-        ]
-
-
-        if setup.get("level") is not None:
-
-            level_text = (
-                f"{setup['level']:,."
-                f"{decimals}f}"
-            )
-
-        else:
-
-            level_text = "forming"
-
-
-        message = (
-
-            f"👀 *PA WATCH — "
-            f"{config['execution']}*\n\n"
-
-            f"*Direction:* {direction}\n"
-
-            f"*Price:* "
-            f"{price:,.{decimals}f}\n"
-
-            f"*Structure:* {level_text}\n"
-
-            "*Status:* 15M structure "
-            "forming — wait for 5M confirmation\n"
-
-            f"*Session:* {current_session}"
-        )
-
-
-        tg(message)
-
-
-        watch_state[key] = {
-
-            "time": now,
-
-            "setup_id":
-                setup_id,
-
-            "session":
-                current_session,
-        }
-
-
-        log.info(
-
-            "WATCH LOCKED %s %s setup=%s",
-
-            symbol,
-
-            direction,
-
-            setup_id,
-        )
+    return True
 
 
 # ============================================================
@@ -2724,8 +2643,8 @@ def process_watch(
 
 def process_trade(
     symbol,
-    frames_data,
-    current_session,
+    frames,
+    session_name,
 ):
 
     if (
@@ -2733,8 +2652,7 @@ def process_trade(
         >= MARKETS[symbol]["daily_cap"]
     ):
 
-        return
-
+        return False
 
     for direction in (
         "BUY",
@@ -2742,134 +2660,100 @@ def process_trade(
     ):
 
         setup = trade_setup(
-            frames_data,
+            frames,
             direction,
         )
-
 
         if not setup["valid"]:
 
             continue
 
+        setup_type = setup.get(
+            "setup_type",
+            "PA CONFIRMATION",
+        )
 
-        # ----------------------------------------------------
-        # TRADE COOLDOWN
-        # ----------------------------------------------------
-
-        if (
-            time.time()
-            - last_trade.get(
-                symbol,
-                0,
-            )
-            < TRADE_SIGNAL_COOLDOWN
+        if not trade_allowed(
+            symbol,
+            direction,
+            setup_type,
         ):
 
             continue
 
-
         price = float(
-            frames_data["5M"]
-            .close
-            .iloc[-1]
+            frames["5M"]["close"].iloc[-1]
         )
-
 
         if direction == "BUY":
 
             entry = (
                 price
-                + BUFFER[symbol]
+                + EXECUTION_BUFFER[symbol]
             )
 
         else:
 
             entry = (
                 price
-                - BUFFER[symbol]
+                - EXECUTION_BUFFER[symbol]
             )
 
-
-        stop_data = sl_calc(
-
+        sl_result = calculate_sl(
             symbol,
-
             direction,
-
             entry,
-
-            frames_data,
-
+            frames,
             setup,
         )
 
-
-        if stop_data is None:
+        if sl_result is None:
 
             log.info(
-
                 "%s %s rejected: "
                 "adaptive SL invalid",
-
                 symbol,
-
                 direction,
             )
 
             continue
 
-
-        sl, stop_distance = (
-            stop_data
+        stop_loss, sl_distance = (
+            sl_result
         )
 
-
-        tp, rr, target_mode = target(
-
-            frames_data,
-
-            direction,
-
-            entry,
-
-            stop_distance,
+        target, rr, target_mode = (
+            adaptive_target(
+                frames,
+                direction,
+                entry,
+                sl_distance,
+            )
         )
-
 
         if (
-            tp is None
+            target is None
             or rr < MIN_RR
         ):
 
             log.info(
-
                 "%s %s rejected: "
                 "RR %.2f < %.2f",
-
                 symbol,
-
                 direction,
-
                 rr,
-
                 MIN_RR,
             )
 
             continue
 
-
-        lot_size = lot(
-
+        lot = calculate_lot(
             symbol,
-
-            stop_distance,
+            sl_distance,
         )
 
-
         score = min(
-
             10,
-
             int(
                 setup.get(
                     "score",
@@ -2878,19 +2762,13 @@ def process_trade(
             ) + 1,
         )
 
-
         config = MARKETS[symbol]
 
-        decimals = config[
-            "decimals"
-        ]
-
+        decimals = config["decimals"]
 
         if score >= 10:
 
-            quality = (
-                "GOD-TIER PA"
-            )
+            quality = "GOD-TIER PA"
 
         elif score >= 9:
 
@@ -2900,19 +2778,31 @@ def process_trade(
 
             quality = "A PA"
 
+        direction_icon = (
+            "📈"
+            if direction == "BUY"
+            else "📉"
+        )
+
+        liquidity_status = (
+            "CONFIRMED"
+            if setup.get("sweep")
+            is not None
+            else "STRUCTURE"
+        )
 
         message = (
 
             f"🚨 *{VERSION} "
-            "TRADE SIGNAL*\n"
+            f"TRADE SIGNAL*\n"
 
             f"*{config['execution']}*\n\n"
 
-            f"{'📈' if direction == 'BUY' else '📉'} "
+            f"{direction_icon} "
             f"*{direction}*\n"
 
-            "🚀 Setup: "
-            "*LIQUIDITY/STRUCTURE PA*\n"
+            f"🚀 Setup: "
+            f"*{setup_type}*\n"
 
             f"⭐ PA Score: "
             f"*{score}/10*\n"
@@ -2924,10 +2814,10 @@ def process_trade(
             f"*{entry:,.{decimals}f}*\n"
 
             f"🛑 SL: "
-            f"*{sl:,.{decimals}f}*\n"
+            f"*{stop_loss:,.{decimals}f}*\n"
 
             f"🎯 TP: "
-            f"*{tp:,.{decimals}f}*\n"
+            f"*{target:,.{decimals}f}*\n"
 
             f"⚖️ RR: "
             f"*1:{rr:.2f}*\n"
@@ -2936,138 +2826,111 @@ def process_trade(
             f"*{target_mode}*\n"
 
             f"💵 Lot: "
-            f"*{lot_size}*\n\n"
+            f"*{lot}*\n\n"
 
-            "⏱ Structure: "
-            "1H → 15M → 5M\n"
+            f"⏱ Structure: "
+            f"1H → 15M → 5M\n"
 
             f"📌 Session: "
-            f"{current_session}\n\n"
+            f"{session_name}\n"
+
+            f"💧 Liquidity: "
+            f"{liquidity_status}\n\n"
 
             "✅ Price Action only\n"
-
-            "🚫 No EMA / RSI / "
-            "ADX / VWAP"
+            "🚫 No EMA / RSI / ADX / VWAP"
         )
 
-
-        tg(message)
-
+        send_telegram(
+            message
+        )
 
         log_signal(
-
             symbol,
-
             direction,
-
             score,
-
+            setup_type,
             entry,
-
-            sl,
-
-            tp,
-
+            stop_loss,
+            target,
             rr,
-
-            current_session,
-
+            session_name,
             target_mode,
         )
 
+        with signal_lock:
 
-        last_trade[
-            symbol
-        ] = time.time()
+            last_trade[symbol] = (
+                time.time()
+            )
 
+            last_trade_direction[
+                symbol
+            ] = direction
 
-        daily_count[
-            symbol
-        ] += 1
+            last_trade_setup[
+                symbol
+            ] = setup_type
 
+            daily_count[symbol] += 1
 
-        session_count[
-            symbol
-        ] = {
+            session_count[symbol] = {
+                "session": session_name,
+                "count": 1,
+            }
 
-            "session":
-                current_session,
+            # Clear PRE/WATCH after confirmed trade.
+            key = setup_key(
+                symbol,
+                direction,
+            )
 
-            "count": 1,
-        }
+            pre_state.pop(
+                key,
+                None,
+            )
 
-
-        # ----------------------------------------------------
-        # Clear PRE/WATCH for completed setup
-        # ----------------------------------------------------
-
-        setup_key = signal_key(
-            symbol,
-            direction,
-        )
-
-
-        pre_state.pop(
-            setup_key,
-            None,
-        )
-
-
-        watch_state.pop(
-            setup_key,
-            None,
-        )
-
+            watch_state.pop(
+                key,
+                None,
+            )
 
         log.info(
-
-            "TRADE SIGNAL %s %s "
-            "| entry=%s "
-            "| sl=%s "
-            "| tp=%s "
-            "| RR=%.2f "
-            "| target=%s "
-            "| score=%s",
-
+            "TRADE SIGNAL | %s | %s | "
+            "entry=%s | SL=%s | TP=%s | "
+            "RR=%.2f | score=%s",
             symbol,
-
             direction,
-
             entry,
-
-            sl,
-
-            tp,
-
+            stop_loss,
+            target,
             rr,
-
-            target_mode,
-
             score,
         )
 
+        return True
 
-        return
+    return False
 
 
 # ============================================================
-# CSV LOG
+# CSV LOGGING
 # ============================================================
 
 def log_signal(
     symbol,
     direction,
     score,
+    setup_type,
     entry,
-    sl,
-    tp,
+    stop_loss,
+    target,
     rr,
-    current_session,
+    session_name,
     target_mode,
 ):
 
     row = [
-
         VERSION,
 
         datetime.now(
@@ -3080,42 +2943,32 @@ def log_signal(
 
         score,
 
+        setup_type,
+
         entry,
 
-        sl,
+        stop_loss,
 
-        tp,
+        target,
 
         rr,
 
-        current_session,
+        session_name,
 
         target_mode,
     ]
 
-
     with log_lock:
 
-        filename = (
-            "signals_log.csv"
-        )
-
+        path = "signals_log.csv"
 
         new_file = (
-
-            not os.path.exists(
-                filename
-            )
-
-            or
-            os.path.getsize(
-                filename
-            ) == 0
+            not os.path.exists(path)
+            or os.path.getsize(path) == 0
         )
 
-
         with open(
-            filename,
+            path,
             "a",
             newline="",
             encoding="utf-8",
@@ -3125,37 +2978,26 @@ def log_signal(
                 file
             )
 
-
             if new_file:
 
-                writer.writerow([
-
-                    "version",
-
-                    "timestamp",
-
-                    "symbol",
-
-                    "direction",
-
-                    "score",
-
-                    "entry",
-
-                    "sl",
-
-                    "tp",
-
-                    "rr",
-
-                    "session",
-
-                    "target_mode",
-                ])
-
+                writer.writerow(
+                    [
+                        "version",
+                        "timestamp",
+                        "symbol",
+                        "direction",
+                        "score",
+                        "setup_type",
+                        "entry",
+                        "sl",
+                        "tp",
+                        "rr",
+                        "session",
+                        "target_mode",
+                    ]
+                )
 
             writer.writerow(row)
-
 
         with open(
             "signals_backup.csv",
@@ -3164,9 +3006,61 @@ def log_signal(
             encoding="utf-8",
         ) as file:
 
-            csv.writer(
-                file
-            ).writerow(row)
+            csv.writer(file).writerow(
+                row
+            )
+
+
+# ============================================================
+# DAILY RESET
+# ============================================================
+
+def reset_daily_state():
+
+    global daily_pnl
+
+    global consecutive_losses
+
+    global reset_date
+
+    today = (
+        datetime.now(
+            timezone.utc
+        ).date()
+    )
+
+    if today == reset_date:
+
+        return
+
+    reset_date = today
+
+    daily_pnl = 0.0
+
+    consecutive_losses = 0
+
+    pre_state.clear()
+
+    watch_state.clear()
+
+    last_trade.clear()
+
+    last_trade_direction.clear()
+
+    last_trade_setup.clear()
+
+    for symbol in SYMBOLS:
+
+        daily_count[symbol] = 0
+
+        session_count[symbol] = {
+            "session": None,
+            "count": 0,
+        }
+
+    log.info(
+        "Daily state reset complete"
+    )
 
 
 # ============================================================
@@ -3177,114 +3071,85 @@ def process_symbol(symbol):
 
     try:
 
-        # ----------------------------------------------------
-        # GLOBAL LOCKS
-        # ----------------------------------------------------
-
-        if weekend():
+        if weekend_block():
 
             return
-
-        if daily_pnl <= MAX_DAILY_LOSS:
-
-            return
-
-        if losses >= MAX_CONSECUTIVE_LOSSES:
-
-            return
-
-
-        # ----------------------------------------------------
-        # SESSION
-        # ----------------------------------------------------
-
-        session_ok, current_session = (
-            session(symbol)
-        )
-
-
-        if not session_ok:
-
-            return
-
 
         if (
-            current_session
-            not in MARKETS[symbol][
-                "sessions"
-            ]
+            daily_pnl
+            <= MAX_DAILY_LOSS
         ):
 
             return
 
-
-        # ----------------------------------------------------
-        # MARKET DATA
-        # ----------------------------------------------------
-
-        frames_data = frames(
-            symbol
-        )
-
-
-        if frames_data is None:
+        if (
+            consecutive_losses
+            >= MAX_CONSECUTIVE_LOSSES
+        ):
 
             return
 
+        active, session_name = (
+            get_session(symbol)
+        )
+
+        if not active:
+
+            return
+
+        if (
+            session_name
+            not in MARKETS[symbol]["sessions"]
+        ):
+
+            return
+
+        frames = get_frames(
+            symbol
+        )
+
+        if frames is None:
+
+            return
 
         # ----------------------------------------------------
         # STAGE 1
-        # PRE
         # ----------------------------------------------------
 
-        process_pre(
-
+        process_pre_signal(
             symbol,
-
-            frames_data,
-
-            current_session,
+            frames,
+            session_name,
         )
-
 
         # ----------------------------------------------------
         # STAGE 2
-        # WATCH
         # ----------------------------------------------------
 
         process_watch(
-
             symbol,
-
-            frames_data,
-
-            current_session,
+            frames,
+            session_name,
         )
 
-
         # ----------------------------------------------------
-        # SESSION TRADE LIMIT
+        # SESSION TRADE GATE
         # ----------------------------------------------------
 
         state = session_count[
             symbol
         ]
 
-
         if (
             state["session"]
-            != current_session
+            != session_name
         ):
 
-            state.update({
+            state["session"] = (
+                session_name
+            )
 
-                "session":
-                    current_session,
-
-                "count":
-                    0,
-            })
-
+            state["count"] = 0
 
         if (
             SIGNAL_ONE_PER_SESSION
@@ -3293,30 +3158,48 @@ def process_symbol(symbol):
 
             return
 
-
         # ----------------------------------------------------
         # STAGE 3
-        # TRADE
         # ----------------------------------------------------
 
         process_trade(
-
             symbol,
-
-            frames_data,
-
-            current_session,
+            frames,
+            session_name,
         )
-
 
     except Exception as exc:
 
         log.exception(
-
             "Symbol processing error %s: %s",
-
             symbol,
+            exc,
+        )
 
+
+# ============================================================
+# HEARTBEAT
+# ============================================================
+
+def watchdog():
+
+    try:
+
+        with open(
+            "heartbeat.txt",
+            "w",
+            encoding="utf-8",
+        ) as file:
+
+            file.write(
+                f"{datetime.now(timezone.utc).isoformat()} | "
+                f"{VERSION} | ACTIVE"
+            )
+
+    except Exception as exc:
+
+        log.error(
+            "Watchdog error: %s",
             exc,
         )
 
@@ -3325,16 +3208,14 @@ def process_symbol(symbol):
 # STARTUP MESSAGE
 # ============================================================
 
-def startup():
+def startup_message():
 
     return (
 
         f"⚡ *{VERSION} LIVE*\n\n"
 
         "1H = Location / Structure\n"
-
         "15M = Liquidity + BOS/CHOCH\n"
-
         "5M = Trigger\n\n"
 
         f"⚠️ Advance Pre-Signal: "
@@ -3358,12 +3239,9 @@ def startup():
         f"📡 Data refresh: "
         f"{DATA_REFRESH_INTERVAL:.1f}s\n\n"
 
-        "⚠️ PRE = one alert per setup\n"
-
-        "👀 WATCH = one alert per "
-        "structure setup\n"
-
-        "🚨 TRADE = confirmed PA setup"
+        "PRE = one alert per setup\n"
+        "WATCH = one alert per structure\n"
+        "TRADE = confirmed PA setup"
     )
 
 
@@ -3375,146 +3253,69 @@ def main():
 
     global reset_date
 
-    global daily_pnl
-
-    global losses
-
-
     log.info(
         "%s STARTED",
         VERSION,
     )
 
+    if TOKEN and CHAT_ID:
 
-    # --------------------------------------------------------
-    # Telegram startup test
-    # --------------------------------------------------------
+        log.info(
+            "Telegram configuration detected"
+        )
 
-    tg(
-        startup()
+    else:
+
+        log.warning(
+            "Telegram credentials missing"
+        )
+
+    send_telegram(
+        startup_message()
     )
-
 
     last_refresh = 0.0
 
     loop = 0
 
-
     while True:
 
         try:
 
-            # ------------------------------------------------
-            # DAILY RESET
-            # ------------------------------------------------
+            reset_daily_state()
 
-            today = (
-                datetime.now(
-                    timezone.utc
-                ).date()
-            )
+            watchdog()
 
-
-            if today != reset_date:
-
-                reset_date = today
-
-                daily_pnl = 0.0
-
-                losses = 0
-
-                pre_state.clear()
-
-                watch_state.clear()
-
-                daily_count.update({
-
-                    symbol: 0
-
-                    for symbol in SYMBOLS
-                })
-
-
-                session_count.update({
-
-                    symbol: {
-
-                        "session":
-                            None,
-
-                        "count":
-                            0,
-                    }
-
-                    for symbol in SYMBOLS
-                })
-
-
-                log.info(
-                    "Daily state reset"
-                )
-
-
-            # ------------------------------------------------
-            # HEARTBEAT
-            # ------------------------------------------------
-
-            with open(
-                "heartbeat.txt",
-                "w",
-                encoding="utf-8",
-            ) as heartbeat:
-
-                heartbeat.write(
-
-                    f"{datetime.now(timezone.utc).isoformat()} "
-                    f"| {VERSION} "
-                    f"| ACTIVE"
-                )
-
+            now = time.time()
 
             # ------------------------------------------------
             # DATA REFRESH
             # ------------------------------------------------
 
             if (
-                time.time()
-                - last_refresh
+                now - last_refresh
                 >= DATA_REFRESH_INTERVAL
             ):
 
                 log.info(
-
-                    "⚡ DATA refresh "
-                    "| symbols=%s "
-                    "| refresh=%.1fs",
-
+                    "⚡ DATA refresh | "
+                    "symbols=%s | "
+                    "refresh=%.1fs",
                     len(SYMBOLS),
-
                     DATA_REFRESH_INTERVAL,
                 )
 
-
                 with ThreadPoolExecutor(
-
-                    max_workers=len(
-                        SYMBOLS
-                    )
-
+                    max_workers=len(SYMBOLS)
                 ) as executor:
 
-
                     futures = [
-
                         executor.submit(
-                            refresh,
+                            refresh_symbol,
                             symbol,
                         )
-
-                        for symbol
-                        in SYMBOLS
+                        for symbol in SYMBOLS
                     ]
-
 
                     for future in as_completed(
                         futures
@@ -3527,56 +3328,36 @@ def main():
                         except Exception as exc:
 
                             log.error(
-
-                                "Data worker: %s",
-
+                                "Data worker error: %s",
                                 exc,
                             )
 
-
-                last_refresh = (
-                    time.time()
-                )
-
+                last_refresh = time.time()
 
             # ------------------------------------------------
-            # 1-SECOND DECISION SCAN
+            # PA SCAN
             # ------------------------------------------------
 
             log.info(
-
-                "⚡ LIVE PA scan #%s "
-                "| symbols=%s "
-                "| interval=%.1fs",
-
+                "⚡ LIVE PA scan #%s | "
+                "symbols=%s | "
+                "interval=%.1fs",
                 loop,
-
                 len(SYMBOLS),
-
                 SCAN_INTERVAL,
             )
 
-
             with ThreadPoolExecutor(
-
-                max_workers=len(
-                    SYMBOLS
-                )
-
+                max_workers=len(SYMBOLS)
             ) as executor:
 
-
                 futures = [
-
                     executor.submit(
                         process_symbol,
                         symbol,
                     )
-
-                    for symbol
-                    in SYMBOLS
+                    for symbol in SYMBOLS
                 ]
-
 
                 for future in as_completed(
                     futures
@@ -3589,12 +3370,9 @@ def main():
                     except Exception as exc:
 
                         log.error(
-
-                            "Worker: %s",
-
+                            "Worker error: %s",
                             exc,
                         )
-
 
             loop += 1
 
@@ -3604,22 +3382,18 @@ def main():
                 SCAN_INTERVAL
             )
 
-
         except KeyboardInterrupt:
 
             log.info(
-                "Stopped by user"
+                "Engine stopped by user"
             )
 
             break
 
-
         except Exception as exc:
 
             log.exception(
-
                 "Main loop error: %s",
-
                 exc,
             )
 
@@ -3629,7 +3403,7 @@ def main():
 
 
 # ============================================================
-# ENTRY
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
