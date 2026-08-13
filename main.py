@@ -58,18 +58,8 @@ VERSION = "PA-SUPREME-2026-ADVANCE-v3"
 # TELEGRAM CONFIG
 # ============================================================
 
-TOKEN = (
-    os.getenv("TELEGRAM_TOKEN")
-    or os.getenv("TOKEN")
-    or ""
-)
-
-CHAT_ID = (
-    os.getenv("TELEGRAM_CHAT_ID")
-    or os.getenv("CHAT_ID")
-    or ""
-)
-
+TOKEN = os.getenv("TOKEN", "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU")
+CHAT_ID = os.getenv("CHAT_ID", "8783763018")
 
 # ============================================================
 # ENGINE SETTINGS
