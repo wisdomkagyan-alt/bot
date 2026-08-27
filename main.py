@@ -10,20 +10,16 @@
 # Rendered DOM detection
 # Telegram alerts
 #
-# ALERT FORMAT:
+# ALERT:
 #
 # 🏏 SRL TOSS ALERT
-# ━━━━━━━━━━━━━━━━━━━━
 #
 # 🏆 Chennai Super Kings SRL WON THE TOSS
 #
-# ⚔️ SRL Match
+# Chennai Super Kings SRL vs Mumbai Indians SRL
 #
-# 🎯 Decision: Elected to bowl
+# 🎯 BOWL
 # ⏰ 27 Aug 2026 | 09:20:25 IST
-#
-# 📡 Sportradar SRL Sportcentre
-# 🔔 LIVE TOSS MONITOR
 #
 # ============================================================
 
@@ -45,7 +41,7 @@ from selenium.webdriver.common.by import By
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 SYSTEM_VERSION = "SRL-TOSS-SELENIUM-2026"
@@ -55,20 +51,19 @@ SRL_URL = (
     "pt/simulated-reality/cricket"
 )
 
-# How often the rendered page is checked.
 CHECK_INTERVAL = 2
-
-# Refresh page periodically so newly published tosses appear.
 PAGE_REFRESH_INTERVAL = 30
-
 PAGE_LOAD_TIMEOUT = 30
-
 REQUEST_TIMEOUT = 15
 
 
 # ============================================================
 # TELEGRAM
 # ============================================================
+
+# IMPORTANT:
+# Put these in Railway Variables.
+# Do NOT hard-code tokens in the code.
 
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
@@ -130,7 +125,7 @@ log = logging.getLogger(
 
 
 # ============================================================
-# HTTP SESSION
+# HTTP
 # ============================================================
 
 http = requests.Session()
@@ -171,6 +166,129 @@ def clean_text(value):
 
 
 # ============================================================
+# CLEAN TEAM NAME
+# ============================================================
+
+def clean_team_name(
+    value,
+):
+
+    value = clean_text(
+        value
+    )
+
+    if not value:
+        return ""
+
+    # Remove things such as:
+    #
+    # 0 OV Chennai Super Kings SRL
+    # 11.2 OV Chennai Super Kings SRL
+    # 0/0 Chennai Super Kings SRL
+    #
+    value = re.sub(
+        r"^(?:\d+(?:\.\d+)?\s*"
+        r"(?:OV|OVERS?)\s*)+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    value = re.sub(
+        r"^(?:\d+/\d+\s*)+",
+        "",
+        value,
+    )
+
+    value = clean_text(
+        value
+    )
+
+    # Keep only through SRL.
+    match = re.search(
+        r"(.+?\sSRL)\b",
+        value,
+        re.IGNORECASE,
+    )
+
+    if match:
+
+        value = clean_text(
+            match.group(1)
+        )
+
+    return value
+
+
+# ============================================================
+# SRL TEAM CHECK
+# ============================================================
+
+def is_srl_team(
+    name,
+):
+
+    name = clean_team_name(
+        name
+    )
+
+    return bool(
+        re.search(
+            r"\sSRL$",
+            name,
+            re.IGNORECASE,
+        )
+    )
+
+
+# ============================================================
+# EXTRACT SRL TEAM NAMES
+# ============================================================
+
+def extract_srl_teams(
+    value,
+):
+
+    value = clean_text(
+        value
+    )
+
+    if not value:
+        return []
+
+    matches = re.findall(
+        r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?\sSRL)\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    teams = []
+
+    for match in matches:
+
+        team = clean_team_name(
+            match
+        )
+
+        if not is_srl_team(
+            team
+        ):
+            continue
+
+        # Remove duplicates.
+        if team.lower() not in {
+            x.lower()
+            for x in teams
+        }:
+
+            teams.append(
+                team
+            )
+
+    return teams
+
+
+# ============================================================
 # JSON LOAD
 # ============================================================
 
@@ -180,6 +298,7 @@ def load_json(
 ):
 
     if not path.exists():
+
         return default
 
     try:
@@ -318,7 +437,7 @@ def telegram_configured():
 
 
 # ============================================================
-# SEND TELEGRAM
+# TELEGRAM
 # ============================================================
 
 def send_telegram(
@@ -381,33 +500,27 @@ def send_telegram(
 
 
 # ============================================================
-# STARTUP MESSAGE
+# STARTUP
 # ============================================================
 
 def startup_message():
 
     return (
-        "🟢 SRL TOSS MONITOR ONLINE\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-
+        "🟢 SRL TOSS MONITOR ONLINE\n\n"
         "🏏 SRL CRICKET ONLY\n"
         "📡 Sportradar SRL Sportcentre\n\n"
-
         "🌐 Selenium + Chrome WebDriver\n"
         f"🔄 DOM check: {CHECK_INTERVAL}s\n"
         f"🔃 Page refresh: {PAGE_REFRESH_INTERVAL}s\n\n"
-
-        "📡 Telegram: ACTIVE\n"
         "🛡 Duplicate protection: ACTIVE\n"
         "🎯 Toss detector: ACTIVE\n"
         "🇮🇳 Time: IST\n\n"
-
         "Waiting for SRL toss..."
     )
 
 
 # ============================================================
-# CREATE CHROME DRIVER
+# CREATE DRIVER
 # ============================================================
 
 def create_driver():
@@ -417,10 +530,6 @@ def create_driver():
     )
 
     options = Options()
-
-    # --------------------------------------------------------
-    # Railway / Linux
-    # --------------------------------------------------------
 
     options.add_argument(
         "--headless=new"
@@ -475,10 +584,6 @@ def create_driver():
         "Safari/537.36"
     )
 
-    # --------------------------------------------------------
-    # Chromium binary
-    # --------------------------------------------------------
-
     if CHROME_BINARY:
 
         if Path(
@@ -500,10 +605,6 @@ def create_driver():
                 "Chrome binary not found: %s",
                 CHROME_BINARY,
             )
-
-    # --------------------------------------------------------
-    # Explicit ChromeDriver if supplied.
-    # --------------------------------------------------------
 
     if CHROMEDRIVER_PATH:
 
@@ -563,31 +664,19 @@ def open_page(
 
     time.sleep(5)
 
-    try:
+    log.info(
+        "Browser URL: %s",
+        driver.current_url,
+    )
 
-        log.info(
-            "Browser URL: %s",
-            driver.current_url,
-        )
-
-    except Exception:
-
-        pass
-
-    try:
-
-        log.info(
-            "Browser title: %s",
-            driver.title,
-        )
-
-    except Exception:
-
-        pass
+    log.info(
+        "Browser title: %s",
+        driver.title,
+    )
 
 
 # ============================================================
-# GET RENDERED BODY TEXT
+# PAGE TEXT
 # ============================================================
 
 def get_page_text(
@@ -596,20 +685,18 @@ def get_page_text(
 
     try:
 
-        value = driver.execute_script(
+        return driver.execute_script(
             """
             return document.body
                 ? document.body.innerText
                 : "";
             """
-        )
-
-        return value or ""
+        ) or ""
 
     except Exception as exc:
 
         log.warning(
-            "Could not read page DOM: %s",
+            "Could not read DOM: %s",
             exc,
         )
 
@@ -643,132 +730,47 @@ def log_page_preview(
 
 
 # ============================================================
-# SRL TEAM VALIDATION
-# ============================================================
-
-def is_srl_team(
-    name,
-):
-
-    value = clean_text(
-        name
-    ).lower()
-
-    return value.endswith(
-        " srl"
-    )
-
-
-# ============================================================
-# CLEAN WINNER
-# ============================================================
-
-def clean_winner(
-    winner,
-):
-
-    winner = clean_text(
-        winner
-    )
-
-    # Remove accidental score/over prefixes.
-
-    winner = re.sub(
-        r"^(?:\d+(?:\.\d+)?\s*(?:OV|OVERS?)\s*)+",
-        "",
-        winner,
-        flags=re.IGNORECASE,
-    )
-
-    winner = re.sub(
-        r"^(?:\d+(?:/\d+)?\s*)+",
-        "",
-        winner,
-    )
-
-    winner = clean_text(
-        winner
-    )
-
-    return winner
-
-
-# ============================================================
-# PARSE TOSS
-#
-# Accepts examples:
-#
-# Chennai Super Kings SRL won the toss
-#
-# Chennai Super Kings SRL won the toss and elected to bowl
-#
-# South Africa SRL won the toss and elected to bat
+# PARSE TOSS SENTENCE
 # ============================================================
 
 def parse_toss(
-    sentence,
+    text_value,
 ):
 
-    sentence = clean_text(
-        sentence
+    text_value = clean_text(
+        text_value
     )
 
-    if not sentence:
-
+    if not text_value:
         return None
 
-    if "won the toss" not in sentence.lower():
-
-        return None
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Capture only the team directly before
-    # "won the toss".
-    #
-    # Do NOT capture:
-    #
-    # 0 OV Chennai Super Kings SRL
-    #
-    # as the winner.
-    # --------------------------------------------------------
-
-    pattern = re.compile(
-        r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?\sSRL)"
-        r"\s+won\s+the\s+toss"
-        r"(?:\s+and\s+elected\s+to\s+"
-        r"(bat|bowl|field))?",
+    # Must contain actual toss phrase.
+    if not re.search(
+        r"\bwon\s+the\s+toss\b",
+        text_value,
         re.IGNORECASE,
-    )
-
-    matches = list(
-        pattern.finditer(
-            sentence
-        )
-    )
-
-    if not matches:
+    ):
 
         return None
 
-    # Use the LAST valid match.
-    # This avoids grabbing unrelated preceding text
-    # when a DOM element contains multiple lines.
+    # --------------------------------------------------------
+    # Winner
+    # --------------------------------------------------------
 
-    match = matches[-1]
-
-    winner = clean_winner(
-        match.group(1)
+    winner_match = re.search(
+        r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?\sSRL)"
+        r"\s+won\s+the\s+toss",
+        text_value,
+        flags=re.IGNORECASE,
     )
 
-    decision = clean_text(
-        match.group(2) or ""
-    ).lower()
+    if not winner_match:
 
-    # --------------------------------------------------------
-    # Must be an SRL team.
-    # --------------------------------------------------------
+        return None
+
+    winner = clean_team_name(
+        winner_match.group(1)
+    )
 
     if not is_srl_team(
         winner
@@ -776,14 +778,81 @@ def parse_toss(
 
         return None
 
+    # --------------------------------------------------------
+    # Decision
+    # --------------------------------------------------------
+
+    decision_match = re.search(
+        r"won\s+the\s+toss"
+        r"(?:\s+and\s+elected\s+to\s+"
+        r"(bat|bowl|field))?",
+        text_value,
+        flags=re.IGNORECASE,
+    )
+
+    decision = ""
+
+    if decision_match:
+
+        decision = clean_text(
+            decision_match.group(1) or ""
+        ).lower()
+
+    # --------------------------------------------------------
+    # Teams inside same DOM container.
+    # --------------------------------------------------------
+
+    teams = extract_srl_teams(
+        text_value
+    )
+
+    team1 = ""
+    team2 = ""
+
+    if len(teams) >= 2:
+
+        # Prefer winner as team1 when present.
+        winner_index = None
+
+        for index, team in enumerate(
+            teams
+        ):
+
+            if team.lower() == winner.lower():
+
+                winner_index = index
+                break
+
+        if winner_index is not None:
+
+            team1 = teams[
+                winner_index
+            ]
+
+            for index, team in enumerate(
+                teams
+            ):
+
+                if index != winner_index:
+
+                    team2 = team
+                    break
+
+        else:
+
+            team1 = teams[0]
+            team2 = teams[1]
+
     return {
         "winner": winner,
         "decision": decision,
+        "team1": team1,
+        "team2": team2,
     }
 
 
 # ============================================================
-# PRIMARY DOM TOSS DETECTOR
+# DOM TOSS DETECTOR
 # ============================================================
 
 def find_dom_tosses(
@@ -811,7 +880,7 @@ def find_dom_tosses(
     except Exception as exc:
 
         log.warning(
-            "DOM toss search failed: %s",
+            "DOM search failed: %s",
             exc,
         )
 
@@ -819,27 +888,104 @@ def find_dom_tosses(
 
     for element in elements:
 
+        candidate_texts = []
+
+        # ----------------------------------------------------
+        # Current element.
+        # ----------------------------------------------------
+
         try:
 
-            raw = element.get_attribute(
+            value = element.get_attribute(
                 "innerText"
             )
 
+            if value:
+
+                candidate_texts.append(
+                    value
+                )
+
         except Exception:
 
-            raw = ""
+            pass
 
-        raw = clean_text(
-            raw
+        # ----------------------------------------------------
+        # Walk up DOM parents.
+        #
+        # This is important because the toss sentence
+        # may be inside a child element while the two
+        # team names are stored in the match row.
+        # ----------------------------------------------------
+
+        for level in range(
+            1,
+            7,
+        ):
+
+            try:
+
+                parent_text = driver.execute_script(
+                    """
+                    let el = arguments[0];
+                    let levels = arguments[1];
+
+                    for (let i = 0; i < levels; i++) {
+                        if (el && el.parentElement) {
+                            el = el.parentElement;
+                        }
+                    }
+
+                    return el ? el.innerText : "";
+                    """,
+                    element,
+                    level,
+                )
+
+                if parent_text:
+
+                    candidate_texts.append(
+                        parent_text
+                    )
+
+            except Exception:
+
+                continue
+
+        # ----------------------------------------------------
+        # Prefer the SMALLEST useful container.
+        # ----------------------------------------------------
+
+        candidate_texts = sorted(
+            {
+                clean_text(x)
+                for x in candidate_texts
+                if clean_text(x)
+            },
+            key=len,
         )
 
-        if not raw:
+        toss = None
 
-            continue
+        for candidate in candidate_texts:
 
-        toss = parse_toss(
-            raw
-        )
+            parsed = parse_toss(
+                candidate
+            )
+
+            if not parsed:
+
+                continue
+
+            toss = parsed
+
+            # Stop once fixture has been found.
+            if (
+                parsed["team1"]
+                and parsed["team2"]
+            ):
+
+                break
 
         if toss:
 
@@ -853,7 +999,7 @@ def find_dom_tosses(
 
 
 # ============================================================
-# SECONDARY PAGE-TEXT DETECTOR
+# PAGE TEXT FALLBACK
 # ============================================================
 
 def find_text_tosses(
@@ -871,9 +1017,7 @@ def find_text_tosses(
         return results
 
     # --------------------------------------------------------
-    # Find every occurrence of:
-    #
-    # TEAM SRL won the toss ...
+    # Search actual toss sentences.
     # --------------------------------------------------------
 
     pattern = re.compile(
@@ -881,20 +1025,16 @@ def find_text_tosses(
         r"\s+won\s+the\s+toss"
         r"(?:\s+and\s+elected\s+to\s+"
         r"(bat|bowl|field))?",
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
 
     for match in pattern.finditer(
         normalized
     ):
 
-        winner = clean_winner(
+        winner = clean_team_name(
             match.group(1)
         )
-
-        decision = clean_text(
-            match.group(2) or ""
-        ).lower()
 
         if not is_srl_team(
             winner
@@ -902,10 +1042,18 @@ def find_text_tosses(
 
             continue
 
+        decision = clean_text(
+            match.group(2) or ""
+        ).lower()
+
+        # Page-text fallback does not know the exact row,
+        # therefore fixture remains SRL Match.
         results.append(
             {
                 "winner": winner,
                 "decision": decision,
+                "team1": "",
+                "team2": "",
             }
         )
 
@@ -915,7 +1063,7 @@ def find_text_tosses(
 
 
 # ============================================================
-# DEDUPLICATE TOSSES IN SAME PAGE SCAN
+# DEDUPLICATE
 # ============================================================
 
 def deduplicate_tosses(
@@ -926,31 +1074,50 @@ def deduplicate_tosses(
 
     for toss in tosses:
 
-        winner = clean_text(
+        winner = clean_team_name(
             toss.get(
                 "winner",
-                ""
+                "",
             )
         )
 
         decision = clean_text(
             toss.get(
                 "decision",
-                ""
+                "",
             )
         ).lower()
 
+        team1 = clean_team_name(
+            toss.get(
+                "team1",
+                "",
+            )
+        )
+
+        team2 = clean_team_name(
+            toss.get(
+                "team2",
+                "",
+            )
+        )
+
         if not winner:
+
             continue
 
         key = (
             winner.lower(),
             decision,
+            team1.lower(),
+            team2.lower(),
         )
 
         unique[key] = {
             "winner": winner,
             "decision": decision,
+            "team1": team1,
+            "team2": team2,
         }
 
     return list(
@@ -959,7 +1126,7 @@ def deduplicate_tosses(
 
 
 # ============================================================
-# IST TIME
+# IST
 # ============================================================
 
 def current_ist():
@@ -979,7 +1146,7 @@ def current_ist():
 
 
 # ============================================================
-# FORMAT DECISION
+# DECISION
 # ============================================================
 
 def format_decision(
@@ -992,17 +1159,16 @@ def format_decision(
 
     if value == "bat":
 
-        return "Elected to bat"
+        return "BAT"
 
-    if value == "bowl":
+    if value in {
+        "bowl",
+        "field",
+    }:
 
-        return "Elected to bowl"
+        return "BOWL"
 
-    if value == "field":
-
-        return "Elected to field"
-
-    return "Not reported"
+    return "TOSS"
 
 
 # ============================================================
@@ -1015,45 +1181,85 @@ def build_toss_message(
 
     now = current_ist()
 
-    decision = format_decision(
-        toss["decision"]
+    winner = clean_team_name(
+        toss["winner"]
     )
 
-    # ========================================================
-    # FIXED FORMAT
-    #
-    # NO FIXTURE
-    # NO SCORE
-    # NO OVERS
-    # NO EXTRA TEXT
-    # ========================================================
+    team1 = clean_team_name(
+        toss.get(
+            "team1",
+            "",
+        )
+    )
+
+    team2 = clean_team_name(
+        toss.get(
+            "team2",
+            "",
+        )
+    )
+
+    decision = format_decision(
+        toss.get(
+            "decision",
+            "",
+        )
+    )
+
+    # --------------------------------------------------------
+    # Fixture
+    # --------------------------------------------------------
+
+    if (
+        team1
+        and team2
+        and team1.lower() != team2.lower()
+    ):
+
+        fixture = (
+            f"{team1} vs {team2}"
+        )
+
+    else:
+
+        fixture = "SRL Match"
+
+    # --------------------------------------------------------
+    # EXACT ALERT FORMAT
+    # --------------------------------------------------------
 
     return (
-    "🏏 SRL TOSS ALERT\n\n"
+        "🏏 SRL TOSS ALERT\n\n"
 
-    f"🏆 {toss['winner']} WON THE TOSS\n\n"
+        f"🏆 {winner} WON THE TOSS\n\n"
 
-    f"{toss['team1']} vs {toss['team2']}\n\n"
+        f"{fixture}\n\n"
 
-    f"🎯 {decision}\n"
-    f"⏰ {now.strftime('%d %b %Y | %H:%M:%S IST')}"
-    
+        f"🎯 {decision}\n"
+        f"⏰ {now.strftime('%d %b %Y | %H:%M:%S IST')}"
     )
 
 
 # ============================================================
 # TOSS ID
-#
-# Winner + decision only.
 # ============================================================
 
 def make_toss_id(
     toss,
 ):
 
+    # Include fixture so that:
+    #
+    # Team A + BOWL
+    #
+    # in one match does not block
+    # Team A + BOWL in another match.
+
     raw = (
-        f"{toss['winner'].strip().lower()}|"
-        f"{toss['decision'].strip().lower()}"
+        f"{toss.get('winner', '').strip().lower()}|"
+        f"{toss.get('team1', '').strip().lower()}|"
+        f"{toss.get('team2', '').strip().lower()}|"
+        f"{toss.get('decision', '').strip().lower()}"
     )
 
     return hashlib.sha256(
@@ -1071,14 +1277,10 @@ def process_toss(
     toss,
 ):
 
-    # --------------------------------------------------------
-    # Validate winner.
-    # --------------------------------------------------------
-
-    winner = clean_winner(
+    winner = clean_team_name(
         toss.get(
             "winner",
-            ""
+            "",
         )
     )
 
@@ -1099,9 +1301,19 @@ def process_toss(
 
     toss["winner"] = winner
 
-    # --------------------------------------------------------
-    # Duplicate ID.
-    # --------------------------------------------------------
+    toss["team1"] = clean_team_name(
+        toss.get(
+            "team1",
+            "",
+        )
+    )
+
+    toss["team2"] = clean_team_name(
+        toss.get(
+            "team2",
+            "",
+        )
+    )
 
     identifier = make_toss_id(
         toss
@@ -1111,40 +1323,36 @@ def process_toss(
 
         return False
 
-    # --------------------------------------------------------
-    # Build EXACTLY ONE message.
-    # --------------------------------------------------------
-
     message = build_toss_message(
         toss
     )
 
     log.info(
-        "🔥 NEW SRL TOSS DETECTED | "
-        "winner=%s | decision=%s",
+        "🔥 NEW SRL TOSS | "
+        "winner=%s | "
+        "team1=%s | "
+        "team2=%s | "
+        "decision=%s",
         toss["winner"],
+        toss["team1"],
+        toss["team2"],
         toss["decision"],
     )
 
     # --------------------------------------------------------
-    # Send exactly one Telegram message.
+    # SEND ONCE
     # --------------------------------------------------------
 
-    success = send_telegram(
+    if not send_telegram(
         message
-    )
-
-    if not success:
+    ):
 
         log.error(
-            "Telegram failed. Toss remains unsent."
+            "Telegram failed. "
+            "Toss remains unsent."
         )
 
         return False
-
-    # --------------------------------------------------------
-    # Mark sent only AFTER Telegram succeeds.
-    # --------------------------------------------------------
 
     seen_tosses.add(
         identifier
@@ -1153,8 +1361,7 @@ def process_toss(
     save_state()
 
     log.info(
-        "✅ SRL TOSS ALERT SENT ONCE | %s",
-        toss["winner"],
+        "✅ SRL TOSS ALERT SENT ONCE"
     )
 
     return True
@@ -1162,9 +1369,6 @@ def process_toss(
 
 # ============================================================
 # BASELINE
-#
-# Existing tosses visible when bot starts are marked as seen.
-# They will NOT trigger old alerts.
 # ============================================================
 
 def baseline_existing_tosses(
@@ -1229,7 +1433,7 @@ def monitor(
     last_refresh = time.monotonic()
 
     # --------------------------------------------------------
-    # Do not alert for old tosses already visible.
+    # Existing tosses should not alert on startup.
     # --------------------------------------------------------
 
     baseline_existing_tosses(
@@ -1241,7 +1445,7 @@ def monitor(
         try:
 
             # =================================================
-            # READ CURRENT PAGE
+            # READ DOM
             # =================================================
 
             page_text = get_page_text(
@@ -1252,9 +1456,9 @@ def monitor(
                 page_text
             )
 
-            # -------------------------------------------------
-            # Log changed page.
-            # -------------------------------------------------
+            # =================================================
+            # PAGE LOG
+            # =================================================
 
             if normalized:
 
@@ -1281,7 +1485,7 @@ def monitor(
                 )
 
             # =================================================
-            # SECONDARY TEXT DETECTOR
+            # FALLBACK TEXT DETECTOR
             # =================================================
 
             text_tosses = find_text_tosses(
@@ -1295,7 +1499,7 @@ def monitor(
                 )
 
             # =================================================
-            # PERIODIC PAGE REFRESH
+            # REFRESH
             # =================================================
 
             now = time.monotonic()
@@ -1322,22 +1526,6 @@ def monitor(
 
                 time.sleep(5)
 
-                try:
-
-                    log.info(
-                        "Browser URL: %s",
-                        driver.current_url,
-                    )
-
-                    log.info(
-                        "Browser title: %s",
-                        driver.title,
-                    )
-
-                except Exception:
-
-                    pass
-
                 last_page_text = ""
 
                 last_refresh = (
@@ -1351,10 +1539,6 @@ def monitor(
             heartbeat(
                 "ACTIVE"
             )
-
-            # =================================================
-            # WAIT
-            # =================================================
 
             time.sleep(
                 CHECK_INTERVAL
@@ -1397,19 +1581,14 @@ def main():
         SYSTEM_VERSION,
     )
 
-    # ========================================================
-    # TELEGRAM CHECK
-    # ========================================================
+    # --------------------------------------------------------
+    # Telegram
+    # --------------------------------------------------------
 
     if not telegram_configured():
 
         log.error(
             "Telegram configuration missing."
-        )
-
-        log.error(
-            "Set TELEGRAM_BOT_TOKEN and "
-            "TELEGRAM_CHAT_ID in Railway Variables."
         )
 
         return
@@ -1418,15 +1597,15 @@ def main():
         "Telegram configuration detected."
     )
 
-    # ========================================================
-    # STATE
-    # ========================================================
+    # --------------------------------------------------------
+    # State
+    # --------------------------------------------------------
 
     load_state()
 
-    # ========================================================
-    # DRIVER
-    # ========================================================
+    # --------------------------------------------------------
+    # Driver
+    # --------------------------------------------------------
 
     driver = None
 
@@ -1434,17 +1613,13 @@ def main():
 
         driver = create_driver()
 
-        # ====================================================
-        # OPEN SRL PAGE
-        # ====================================================
-
         open_page(
             driver
         )
 
-        # ====================================================
-        # INITIAL PAGE
-        # ====================================================
+        # ----------------------------------------------------
+        # Initial page
+        # ----------------------------------------------------
 
         page_text = get_page_text(
             driver
@@ -1454,9 +1629,9 @@ def main():
             page_text
         )
 
-        # ====================================================
-        # STARTUP MESSAGE
-        # ====================================================
+        # ----------------------------------------------------
+        # Startup
+        # ----------------------------------------------------
 
         if send_telegram(
             startup_message()
@@ -1472,9 +1647,9 @@ def main():
                 "Startup Telegram message failed."
             )
 
-        # ====================================================
-        # MONITOR
-        # ====================================================
+        # ----------------------------------------------------
+        # Monitor
+        # ----------------------------------------------------
 
         monitor(
             driver
