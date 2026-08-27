@@ -4,31 +4,15 @@
 # SRL CRICKET ONLY
 #
 # Source:
-#   Sportradar Simulated Reality Sportcentre
+#   https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket
 #
-# Browser:
-#   Selenium
-#   Chrome / Chromium
-#
-# Detection:
-#   Rendered DOM
-#   "won the toss"
-#
-# Telegram:
-#   Instant SRL toss alert
-#
-# Time:
-#   Telegram timestamp = IST
+# Selenium + Chromium
+# Rendered DOM detection
+# Telegram alerts
 #
 # NO Sportradar API
-# NO API polling
-# NO API 429
 # NO Playwright
-# ============================================================
-
-
-# ============================================================
-# IMPORTS
+# NO API 429
 # ============================================================
 
 import hashlib
@@ -54,61 +38,26 @@ from selenium.webdriver.common.by import By
 
 SYSTEM_VERSION = "SRL-TOSS-SELENIUM-2026"
 
-
-# ============================================================
-# SRL SPORTCENTRE
-# ============================================================
-
 SRL_URL = (
     "https://sportcenter.sir.sportradar.com/"
     "pt/simulated-reality/cricket"
 )
 
-
-# ============================================================
-# MONITOR SETTINGS
-# ============================================================
-
-# How often Selenium checks the already-rendered page.
 CHECK_INTERVAL = 2
-
-
-# Periodically refresh the page so that stale browser
-# state cannot persist indefinitely.
 PAGE_REFRESH_INTERVAL = 30
 
-
-# Chrome page-load timeout.
 PAGE_LOAD_TIMEOUT = 30
-
-
-# Telegram timeout.
 REQUEST_TIMEOUT = 15
 
 
 # ============================================================
-# STATE FILES
-# ============================================================
-
-STATE_FILE = Path(
-    "seen_tosses.json"
-)
-
-
-HEARTBEAT_FILE = Path(
-    "srl_toss_heartbeat.txt"
-)
-
-
-# ============================================================
-# TELEGRAM ENVIRONMENT VARIABLES
+# TELEGRAM
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
     "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU",
 ).strip()
-
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
@@ -117,10 +66,8 @@ TELEGRAM_CHAT_ID = os.getenv(
 
 
 # ============================================================
-# BROWSER ENVIRONMENT VARIABLES
+# CHROME
 # ============================================================
-
-# Railway normally has Chromium installed by the Dockerfile.
 
 CHROME_BINARY = os.getenv(
     "CHROME_BINARY",
@@ -132,6 +79,22 @@ CHROMEDRIVER_PATH = os.getenv(
     "CHROMEDRIVER_PATH",
     "",
 ).strip()
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+STATE_FILE = Path(
+    "seen_tosses.json"
+)
+
+HEARTBEAT_FILE = Path(
+    "srl_toss_heartbeat.txt"
+)
+
+
+seen_tosses = set()
 
 
 # ============================================================
@@ -153,7 +116,7 @@ log = logging.getLogger(
 
 
 # ============================================================
-# HTTP SESSION
+# HTTP
 # ============================================================
 
 http = requests.Session()
@@ -169,31 +132,20 @@ http.headers.update(
 
 
 # ============================================================
-# STATE
+# TEXT
 # ============================================================
 
-seen_tosses = set()
-
-
-# ============================================================
-# TEXT HELPER
-# ============================================================
-
-def text(value):
+def clean_text(value):
 
     if value is None:
         return ""
 
-    return str(value).strip()
+    value = str(value)
 
-
-# ============================================================
-# NORMALIZE TEXT
-# ============================================================
-
-def normalize_text(value):
-
-    value = text(value)
+    value = value.replace(
+        "\xa0",
+        " ",
+    )
 
     value = re.sub(
         r"\s+",
@@ -205,16 +157,15 @@ def normalize_text(value):
 
 
 # ============================================================
-# LOAD JSON
+# JSON LOAD
 # ============================================================
 
-def load_json_file(
+def load_json(
     path,
     default,
 ):
 
     if not path.exists():
-
         return default
 
     try:
@@ -237,10 +188,10 @@ def load_json_file(
 
 
 # ============================================================
-# SAVE JSON
+# JSON SAVE
 # ============================================================
 
-def save_json_file(
+def save_json(
     path,
     data,
 ):
@@ -273,7 +224,7 @@ def load_state():
 
     global seen_tosses
 
-    data = load_json_file(
+    data = load_json(
         STATE_FILE,
         [],
     )
@@ -289,7 +240,7 @@ def load_state():
         }
 
         log.info(
-            "Loaded %s previous toss IDs.",
+            "Loaded %s seen toss IDs.",
             len(seen_tosses),
         )
 
@@ -308,7 +259,7 @@ def load_state():
 
 def save_state():
 
-    save_json_file(
+    save_json(
         STATE_FILE,
         sorted(
             seen_tosses
@@ -341,7 +292,7 @@ def heartbeat(
 
 
 # ============================================================
-# TELEGRAM CONFIGURATION
+# TELEGRAM CONFIG
 # ============================================================
 
 def telegram_configured():
@@ -353,7 +304,7 @@ def telegram_configured():
 
 
 # ============================================================
-# SEND TELEGRAM
+# TELEGRAM
 # ============================================================
 
 def send_telegram(
@@ -450,7 +401,7 @@ def startup_message():
 
 
 # ============================================================
-# CHROME DRIVER
+# CREATE CHROME DRIVER
 # ============================================================
 
 def create_driver():
@@ -464,7 +415,7 @@ def create_driver():
 
 
     # --------------------------------------------------------
-    # Railway / Linux settings
+    # Headless Linux / Railway
     # --------------------------------------------------------
 
     options.add_argument(
@@ -508,7 +459,7 @@ def create_driver():
     )
 
     options.add_argument(
-        "--lang=pt"
+        "--lang=en-US"
     )
 
     options.add_argument(
@@ -522,7 +473,7 @@ def create_driver():
 
 
     # --------------------------------------------------------
-    # Chromium binary
+    # Chromium
     # --------------------------------------------------------
 
     if CHROME_BINARY:
@@ -543,14 +494,13 @@ def create_driver():
         else:
 
             log.warning(
-                "Configured Chrome binary does "
-                "not exist: %s",
+                "Chrome binary not found: %s",
                 CHROME_BINARY,
             )
 
 
     # --------------------------------------------------------
-    # Driver
+    # ChromeDriver
     # --------------------------------------------------------
 
     if CHROMEDRIVER_PATH:
@@ -560,15 +510,18 @@ def create_driver():
             CHROMEDRIVER_PATH,
         )
 
+        from selenium.webdriver.chrome.service import Service
+
+        service = Service(
+            CHROMEDRIVER_PATH
+        )
+
         driver = webdriver.Chrome(
-            executable_path=CHROMEDRIVER_PATH,
+            service=service,
             options=options,
         )
 
     else:
-
-        # Selenium Manager automatically finds
-        # a compatible driver when available.
 
         driver = webdriver.Chrome(
             options=options
@@ -587,7 +540,7 @@ def create_driver():
 # OPEN SRL PAGE
 # ============================================================
 
-def open_srl_page(
+def open_page(
     driver,
 ):
 
@@ -605,7 +558,7 @@ def open_srl_page(
     except Exception as exc:
 
         log.warning(
-            "Initial page load warning: %s",
+            "Page load warning: %s",
             exc,
         )
 
@@ -632,16 +585,16 @@ def open_srl_page(
 
 
 # ============================================================
-# GET RENDERED DOM TEXT
+# GET RENDERED PAGE TEXT
 # ============================================================
 
-def get_rendered_text(
+def get_page_text(
     driver,
 ):
 
     try:
 
-        result = driver.execute_script(
+        value = driver.execute_script(
             """
             return document.body
                 ? document.body.innerText
@@ -649,13 +602,13 @@ def get_rendered_text(
             """
         )
 
-        return result or ""
+        return value or ""
 
 
     except Exception as exc:
 
         log.warning(
-            "Could not read rendered DOM: %s",
+            "Could not read page DOM: %s",
             exc,
         )
 
@@ -663,53 +616,46 @@ def get_rendered_text(
 
 
 # ============================================================
-# GET ELEMENT TEXT
+# PAGE PREVIEW
 # ============================================================
 
-def safe_element_text(
-    element,
+def log_page_preview(
+    page_text,
 ):
 
-    try:
-
-        value = element.get_attribute(
-            "innerText"
-        )
-
-        if value:
-
-            return normalize_text(
-                value
-            )
+    value = clean_text(
+        page_text
+    )
 
 
-    except Exception:
+    if not value:
+        return
 
-        pass
+
+    log.info(
+        "Rendered page text length: %s",
+        len(value),
+    )
 
 
-    try:
-
-        return normalize_text(
-            element.text
-        )
-
-    except Exception:
-
-        return ""
+    log.info(
+        "PAGE PREVIEW: %s",
+        value[:1500],
+    )
 
 
 # ============================================================
-# CHECK SRL NAME
+# CHECK SRL TEAM NAME
 # ============================================================
 
-def is_srl_name(
+def is_srl_team(
     name,
 ):
 
-    value = normalize_text(
+    value = clean_text(
         name
     ).lower()
+
 
     return value.endswith(
         " srl"
@@ -717,14 +663,76 @@ def is_srl_name(
 
 
 # ============================================================
-# EXTRACT TOSS FROM SENTENCE
+# EXTRACT SRL NAMES
 # ============================================================
 
-def parse_toss_sentence(
+def extract_srl_names(
+    value,
+):
+
+    value = clean_text(
+        value
+    )
+
+
+    pattern = re.compile(
+        r"\b"
+        r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?"
+        r"\sSRL)"
+        r"\b",
+        re.IGNORECASE,
+    )
+
+
+    names = []
+
+
+    for match in pattern.finditer(
+        value
+    ):
+
+        name = clean_text(
+            match.group(1)
+        )
+
+
+        if not is_srl_team(
+            name
+        ):
+
+            continue
+
+
+        # Remove obvious UI/header text.
+        if name.lower() in {
+            "simulated reality league",
+        }:
+
+            continue
+
+
+        if not any(
+            name.lower() == existing.lower()
+            for existing in names
+        ):
+
+            names.append(
+                name
+            )
+
+
+    return names
+
+
+# ============================================================
+# PARSE TOSS SENTENCE
+# ============================================================
+
+def parse_toss(
     sentence,
 ):
 
-    sentence = normalize_text(
+    sentence = clean_text(
         sentence
     )
 
@@ -733,10 +741,6 @@ def parse_toss_sentence(
 
         return None
 
-
-    # --------------------------------------------------------
-    # Only cricket toss text.
-    # --------------------------------------------------------
 
     lower = sentence.lower()
 
@@ -747,11 +751,11 @@ def parse_toss_sentence(
 
 
     # --------------------------------------------------------
-    # Winner:
+    # Exact structure shown by SRL Sportcentre:
     #
-    # Karachi Kings SRL won the toss
+    # Karachi Kings SRL won the toss and elected to bowl
     #
-    # South Africa SRL won the toss
+    # South Africa SRL won the toss and elected to bat
     # --------------------------------------------------------
 
     pattern = re.compile(
@@ -773,17 +777,17 @@ def parse_toss_sentence(
         return None
 
 
-    winner = normalize_text(
+    winner = clean_text(
         match.group(1)
     )
 
 
-    decision = normalize_text(
+    decision = clean_text(
         match.group(2) or ""
     ).lower()
 
 
-    if not is_srl_name(
+    if not is_srl_team(
         winner
     ):
 
@@ -798,19 +802,15 @@ def parse_toss_sentence(
 
 
 # ============================================================
-# FIND TOSS DIRECTLY IN DOM
+# DIRECT DOM TOSS SEARCH
 # ============================================================
 
-def find_live_tosses(
+def find_dom_tosses(
     driver,
 ):
 
     results = []
 
-
-    # --------------------------------------------------------
-    # Search DOM elements containing "won the toss".
-    # --------------------------------------------------------
 
     try:
 
@@ -828,10 +828,11 @@ def find_live_tosses(
             ),
         )
 
+
     except Exception as exc:
 
         log.warning(
-            "DOM toss search failed: %s",
+            "Direct DOM search failed: %s",
             exc,
         )
 
@@ -839,13 +840,24 @@ def find_live_tosses(
 
 
     # --------------------------------------------------------
-    # Parse every matching element.
+    # Process matching elements.
     # --------------------------------------------------------
 
     for element in elements:
 
-        raw = safe_element_text(
-            element
+        try:
+
+            raw = element.get_attribute(
+                "innerText"
+            )
+
+        except Exception:
+
+            raw = ""
+
+
+        raw = clean_text(
+            raw
         )
 
 
@@ -854,7 +866,7 @@ def find_live_tosses(
             continue
 
 
-        toss = parse_toss_sentence(
+        toss = parse_toss(
             raw
         )
 
@@ -867,7 +879,7 @@ def find_live_tosses(
 
 
     # --------------------------------------------------------
-    # Remove duplicates.
+    # Deduplicate.
     # --------------------------------------------------------
 
     unique = {}
@@ -890,17 +902,17 @@ def find_live_tosses(
 
 
 # ============================================================
-# TEXT FALLBACK
+# PAGE TEXT TOSS SEARCH
 # ============================================================
 
-def find_tosses_from_page_text(
+def find_text_tosses(
     page_text,
 ):
 
     results = []
 
 
-    normalized = normalize_text(
+    normalized = clean_text(
         page_text
     )
 
@@ -909,10 +921,6 @@ def find_tosses_from_page_text(
 
         return results
 
-
-    # --------------------------------------------------------
-    # Search all occurrences.
-    # --------------------------------------------------------
 
     pattern = re.compile(
         r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?\sSRL)"
@@ -927,17 +935,17 @@ def find_tosses_from_page_text(
         normalized
     ):
 
-        winner = normalize_text(
+        winner = clean_text(
             match.group(1)
         )
 
 
-        decision = normalize_text(
+        decision = clean_text(
             match.group(2) or ""
         ).lower()
 
 
-        if not is_srl_name(
+        if not is_srl_team(
             winner
         ):
 
@@ -957,83 +965,15 @@ def find_tosses_from_page_text(
 
 
 # ============================================================
-# TOSS CODE FALLBACK
-#
-# Sportcentre sometimes displays:
-#
-# Toss:SA
-# Toss:RR
-# Toss:KK
+# FIND FIXTURE FROM DOM
 # ============================================================
 
-def find_toss_codes(
-    page_text,
-):
-
-    results = []
-
-
-    normalized = normalize_text(
-        page_text
-    )
-
-
-    if not normalized:
-
-        return results
-
-
-    # --------------------------------------------------------
-    # This is only a BACKUP.
-    #
-    # Primary detector remains:
-    # "won the toss"
-    # --------------------------------------------------------
-
-    pattern = re.compile(
-        r"Toss\s*:\s*"
-        r"([A-Za-zÀ-ÿ0-9_-]+)",
-        re.IGNORECASE,
-    )
-
-
-    for match in pattern.finditer(
-        normalized
-    ):
-
-        code = normalize_text(
-            match.group(1)
-        )
-
-
-        if not code:
-
-            continue
-
-
-        results.append(
-            {
-                "winner": code,
-                "decision": "",
-                "raw": match.group(0),
-                "backup": True,
-            }
-        )
-
-
-    return results
-
-
-# ============================================================
-# GET FIXTURE FROM PAGE
-# ============================================================
-
-def find_fixture_for_winner(
+def find_fixture(
     driver,
     winner,
 ):
 
-    winner_lower = normalize_text(
+    winner_lower = clean_text(
         winner
     ).lower()
 
@@ -1054,102 +994,169 @@ def find_fixture_for_winner(
             ),
         )
 
-
     except Exception:
 
         return ""
 
 
     # --------------------------------------------------------
-    # Look for the smallest useful parent containing
-    # the winner and another SRL team.
+    # Start at matching element and move upward.
     # --------------------------------------------------------
 
     for element in elements:
 
-        try:
+        current = element
 
-            current = element
 
-            for _ in range(6):
+        for _ in range(7):
 
-                try:
+            try:
 
-                    current = (
-                        current.find_element(
-                            By.XPATH,
-                            ".."
-                        )
-                    )
+                current = current.find_element(
+                    By.XPATH,
+                    ".."
+                )
 
-                except Exception:
+            except Exception:
 
+                break
+
+
+            value = clean_text(
+                current.get_attribute(
+                    "innerText"
+                )
+            )
+
+
+            if not value:
+
+                continue
+
+
+            names = extract_srl_names(
+                value
+            )
+
+
+            # ------------------------------------------------
+            # Need winner + opponent.
+            # ------------------------------------------------
+
+            winner_index = None
+
+
+            for index, name in enumerate(
+                names
+            ):
+
+                if (
+                    name.lower()
+                    == winner_lower
+                ):
+
+                    winner_index = index
                     break
 
 
-                value = safe_element_text(
-                    current
+            if winner_index is None:
+
+                continue
+
+
+            # ------------------------------------------------
+            # Prefer the nearest other SRL name.
+            # ------------------------------------------------
+
+            candidates = [
+                name
+                for name in names
+                if name.lower()
+                != winner_lower
+            ]
+
+
+            if not candidates:
+
+                continue
+
+
+            opponent = candidates[0]
+
+
+            # ------------------------------------------------
+            # If the row has only two teams, excellent.
+            # ------------------------------------------------
+
+            if len(names) == 2:
+
+                return (
+                    f"{names[0]} vs "
+                    f"{names[1]}"
                 )
 
 
-                if not value:
+            # ------------------------------------------------
+            # For larger ancestor elements, use the nearest
+            # name around the winner.
+            # ------------------------------------------------
 
-                    continue
+            if winner_index > 0:
 
+                opponent = names[
+                    winner_index - 1
+                ]
 
-                # Need another SRL team.
-                names = re.findall(
-                    r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*\sSRL",
-                    value,
-                    flags=re.IGNORECASE,
-                )
+            elif winner_index + 1 < len(names):
 
-
-                cleaned = []
-
-                for name in names:
-
-                    name = normalize_text(
-                        name
-                    )
-
-                    if name.lower() not in {
-                        x.lower()
-                        for x in cleaned
-                    }:
-
-                        cleaned.append(
-                            name
-                        )
+                opponent = names[
+                    winner_index + 1
+                ]
 
 
-                if (
-                    len(cleaned) >= 2
-                    and any(
-                        winner_lower
-                        == x.lower()
-                        for x in cleaned
-                    )
-                ):
-
-                    # Usually first two names are
-                    # the fixture teams.
-                    return (
-                        f"{cleaned[0]} vs "
-                        f"{cleaned[1]}"
-                    )
+            return (
+                f"{winner} vs "
+                f"{opponent}"
+            )
 
 
     return ""
 
 
 # ============================================================
-# BUILD TOSS ID
+# FALLBACK: FIND FIXTURE FROM TOSS TEXT
+# ============================================================
+
+def find_fixture_from_text(
+    page_text,
+    winner,
+):
+
+    normalized = clean_text(
+        page_text
+    )
+
+
+    names = extract_srl_names(
+        normalized
+    )
+
+
+    # We cannot safely determine the opponent from the whole
+    # page if many SRL matches exist.
+    #
+    # Therefore return blank and let the DOM method handle it.
+
+    return ""
+
+
+# ============================================================
+# MAKE UNIQUE TOSS ID
 # ============================================================
 
 def make_toss_id(
     toss,
-    fixture="",
+    fixture,
 ):
 
     raw = (
@@ -1167,14 +1174,14 @@ def make_toss_id(
 
 
 # ============================================================
-# DECISION FORMAT
+# FORMAT DECISION
 # ============================================================
 
 def format_decision(
     decision,
 ):
 
-    value = normalize_text(
+    value = clean_text(
         decision
     ).lower()
 
@@ -1193,7 +1200,7 @@ def format_decision(
 
 
 # ============================================================
-# IST TIME
+# CURRENT IST TIME
 # ============================================================
 
 def current_ist():
@@ -1214,12 +1221,12 @@ def current_ist():
 
 
 # ============================================================
-# TOSS MESSAGE
+# BUILD TELEGRAM MESSAGE
 # ============================================================
 
 def build_toss_message(
     toss,
-    fixture="",
+    fixture,
 ):
 
     now = current_ist()
@@ -1227,9 +1234,7 @@ def build_toss_message(
 
     if not fixture:
 
-        fixture = (
-            "SRL Match"
-        )
+        fixture = "SRL Match"
 
 
     decision = format_decision(
@@ -1255,7 +1260,7 @@ def build_toss_message(
 
 
 # ============================================================
-# PROCESS TOSS
+# PROCESS ONE TOSS
 # ============================================================
 
 def process_toss(
@@ -1263,10 +1268,18 @@ def process_toss(
     toss,
 ):
 
-    fixture = find_fixture_for_winner(
+    fixture = find_fixture(
         driver,
         toss["winner"],
     )
+
+
+    if not fixture:
+
+        fixture = find_fixture_from_text(
+            get_page_text(driver),
+            toss["winner"],
+        )
 
 
     identifier = make_toss_id(
@@ -1276,19 +1289,24 @@ def process_toss(
 
 
     # --------------------------------------------------------
-    # Duplicate protection.
+    # DUPLICATE PROTECTION
     # --------------------------------------------------------
 
     if identifier in seen_tosses:
 
         log.info(
-            "Duplicate toss ignored | %s | %s",
+            "Duplicate toss ignored | "
+            "%s | %s",
             toss["winner"],
             fixture,
         )
 
         return False
 
+
+    # --------------------------------------------------------
+    # NEW TOSS
+    # --------------------------------------------------------
 
     log.info(
         "🔥 NEW SRL TOSS DETECTED | "
@@ -1299,30 +1317,36 @@ def process_toss(
     )
 
 
+    log.info(
+        "RAW TOSS TEXT | %s",
+        toss["raw"][:500],
+    )
+
+
     message = build_toss_message(
         toss,
         fixture,
     )
 
 
-    log.info(
-        "Sending Telegram toss alert..."
-    )
-
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
 
     if not send_telegram(
         message
     ):
 
         log.error(
-            "Telegram failed. Toss will be retried."
+            "Telegram failed. "
+            "Toss will be retried."
         )
 
         return False
 
 
     # --------------------------------------------------------
-    # Save ONLY after Telegram succeeds.
+    # SAVE ONLY AFTER SUCCESS
     # --------------------------------------------------------
 
     seen_tosses.add(
@@ -1334,7 +1358,8 @@ def process_toss(
 
 
     log.info(
-        "✅ SRL TOSS TELEGRAM ALERT SENT | %s",
+        "✅ SRL TOSS TELEGRAM ALERT SENT | "
+        "%s",
         toss["winner"],
     )
 
@@ -1343,37 +1368,76 @@ def process_toss(
 
 
 # ============================================================
-# PAGE PREVIEW
+# BASELINE EXISTING TOSSES
 # ============================================================
 
-def log_page_preview(
-    page_text,
+def baseline_existing_tosses(
+    driver,
 ):
 
-    normalized = normalize_text(
+    log.info(
+        "Creating initial toss baseline..."
+    )
+
+
+    page_text = get_page_text(
+        driver
+    )
+
+
+    tosses = find_text_tosses(
         page_text
     )
 
 
-    if not normalized:
+    if not tosses:
+
+        log.info(
+            "No existing tosses found "
+            "during baseline."
+        )
 
         return
 
 
-    log.info(
-        "Rendered page text length: %s",
-        len(normalized),
-    )
+    count = 0
+
+
+    for toss in tosses:
+
+        fixture = find_fixture(
+            driver,
+            toss["winner"],
+        )
+
+
+        identifier = make_toss_id(
+            toss,
+            fixture,
+        )
+
+
+        if identifier not in seen_tosses:
+
+            seen_tosses.add(
+                identifier
+            )
+
+            count += 1
+
+
+    save_state()
 
 
     log.info(
-        "PAGE PREVIEW: %s",
-        normalized[:1500],
+        "Initial baseline complete | "
+        "%s tosses recorded without alert.",
+        count,
     )
 
 
 # ============================================================
-# MAIN MONITOR
+# MONITOR
 # ============================================================
 
 def monitor(
@@ -1385,28 +1449,40 @@ def monitor(
     last_refresh = time.monotonic()
 
 
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # Existing completed matches on the page should NOT
+    # generate alerts when the bot first starts.
+    # --------------------------------------------------------
+
+    baseline_existing_tosses(
+        driver
+    )
+
+
     while True:
 
         try:
 
             # =================================================
-            # READ RENDERED DOM
+            # READ CURRENT RENDERED PAGE
             # =================================================
 
-            page_text = get_rendered_text(
+            page_text = get_page_text(
                 driver
             )
 
 
-            if page_text:
+            normalized = clean_text(
+                page_text
+            )
 
-                normalized = normalize_text(
-                    page_text
-                )
 
+            if normalized:
 
                 # ---------------------------------------------
-                # Only log when page content changes.
+                # Log only changed page.
                 # ---------------------------------------------
 
                 if normalized != last_page_text:
@@ -1420,11 +1496,9 @@ def monitor(
 
             # =================================================
             # PRIMARY DETECTOR
-            #
-            # DIRECT DOM SEARCH
             # =================================================
 
-            dom_tosses = find_live_tosses(
+            dom_tosses = find_dom_tosses(
                 driver
             )
 
@@ -1439,14 +1513,10 @@ def monitor(
 
             # =================================================
             # SECONDARY DETECTOR
-            #
-            # FULL RENDERED PAGE TEXT
             # =================================================
 
-            text_tosses = (
-                find_tosses_from_page_text(
-                    page_text
-                )
+            text_tosses = find_text_tosses(
+                page_text
             )
 
 
@@ -1459,7 +1529,7 @@ def monitor(
 
 
             # =================================================
-            # PERIODIC PAGE REFRESH
+            # PERIODIC REFRESH
             # =================================================
 
             now = time.monotonic()
@@ -1487,6 +1557,8 @@ def monitor(
                     )
 
 
+                # Give the page time to render.
+
                 time.sleep(5)
 
 
@@ -1496,10 +1568,8 @@ def monitor(
                 )
 
 
-                # Reset only page-change logging.
-                #
-                # DO NOT clear seen_tosses.
-                #
+                # Force next page preview.
+
                 last_page_text = ""
 
 
@@ -1532,9 +1602,11 @@ def monitor(
                 "Stopped by user."
             )
 
+
             heartbeat(
                 "STOPPED"
             )
+
 
             break
 
@@ -1568,7 +1640,7 @@ def main():
 
 
     # ========================================================
-    # CREDENTIAL CHECK
+    # TELEGRAM
     # ========================================================
 
     if not telegram_configured():
@@ -1579,7 +1651,7 @@ def main():
 
         log.error(
             "Set TELEGRAM_BOT_TOKEN and "
-            "TELEGRAM_CHAT_ID in Railway."
+            "TELEGRAM_CHAT_ID in Railway Variables."
         )
 
         return
@@ -1591,14 +1663,14 @@ def main():
 
 
     # ========================================================
-    # LOAD STATE
+    # STATE
     # ========================================================
 
     load_state()
 
 
     # ========================================================
-    # CREATE DRIVER
+    # DRIVER
     # ========================================================
 
     driver = None
@@ -1610,10 +1682,10 @@ def main():
 
 
         # ====================================================
-        # OPEN PAGE
+        # OPEN SRL
         # ====================================================
 
-        open_srl_page(
+        open_page(
             driver
         )
 
@@ -1622,7 +1694,7 @@ def main():
         # VERIFY PAGE
         # ====================================================
 
-        page_text = get_rendered_text(
+        page_text = get_page_text(
             driver
         )
 
@@ -1633,7 +1705,7 @@ def main():
 
 
         # ====================================================
-        # TELEGRAM STARTUP
+        # STARTUP TELEGRAM
         # ====================================================
 
         if send_telegram(
@@ -1652,7 +1724,7 @@ def main():
 
 
         # ====================================================
-        # START MONITOR
+        # MONITOR
         # ====================================================
 
         monitor(
