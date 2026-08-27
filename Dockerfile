@@ -29,13 +29,15 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxfixes3 \
     libxkbcommon0 \
+    libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
