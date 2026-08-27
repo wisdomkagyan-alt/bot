@@ -1029,18 +1029,15 @@ def build_toss_message(
     # ========================================================
 
     return (
-        "🏏 SRL TOSS ALERT\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    "🏏 SRL TOSS ALERT\n\n"
 
-        f"🏆 {toss['winner']} WON THE TOSS\n\n"
+    f"🏆 {toss['winner']} WON THE TOSS\n\n"
 
-        "⚔️ SRL Match\n\n"
+    f"{toss['team1']} vs {toss['team2']}\n\n"
 
-        f"🎯 Decision: {decision}\n"
-        f"⏰ {now.strftime('%d %b %Y | %H:%M:%S IST')}\n\n"
-
-        "📡 Sportradar SRL Sportcentre\n"
-        "🔔 LIVE TOSS MONITOR"
+    f"🎯 {decision}\n"
+    f"⏰ {now.strftime('%d %b %Y | %H:%M:%S IST')}"
+    
     )
 
 
