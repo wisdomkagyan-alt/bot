@@ -1,25 +1,29 @@
-
 # ============================================================
 # SRL TOSS API MONITOR 2026
 #
 # Sportradar Cricket API -> Telegram
 #
+# SRL CRICKET ONLY
+#
 # No Playwright
 # No Chromium
 # No webpage scraping
 #
-# Railway environment variables:
+# Railway Variables:
 #
 #   SPORTRADAR_API_KEY
+#   SPORTRADAR_ACCESS_LEVEL
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID
 #
 # ============================================================
 
+import hashlib
 import json
 import logging
 import os
 import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,42 +36,50 @@ import requests
 
 SYSTEM_VERSION = "SRL-TOSS-API-MONITOR-2026"
 
+
+# NEVER hard-code credentials.
 SPORTRADAR_API_KEY = os.getenv(
     "SPORTRADAR_API_KEY",
     "91cAuMjzEUOfHnWuYqa3f0UBgfEipHGLnTeY1ypS",
-)
+).strip()
+
 
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
     "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU",
-)
+).strip()
+
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
     "8783763018",
-)
+).strip()
 
 
 # ============================================================
 # SPORTRADAR SETTINGS
 # ============================================================
 
-# Use "t" if your key is a trial key.
-# Use "p" if your key is a production key.
-#
-# Railway variable can override it:
-#
-# SPORTRADAR_ACCESS_LEVEL=t
-#
+# t = trial
+# p = production
+
 SPORTRADAR_ACCESS_LEVEL = os.getenv(
     "SPORTRADAR_ACCESS_LEVEL",
     "t",
 ).strip().lower()
 
 
+if SPORTRADAR_ACCESS_LEVEL not in {
+    "t",
+    "p",
+}:
+    SPORTRADAR_ACCESS_LEVEL = "t"
+
+
 LANGUAGE = "en"
 
 FORMAT = "json"
+
 
 API_BASE = (
     "https://api.sportradar.com/"
@@ -80,62 +92,45 @@ API_BASE = (
 # MONITOR SETTINGS
 # ============================================================
 
-# API live schedule.
+# Refresh live schedule every 10 seconds.
 SCHEDULE_INTERVAL = 10
 
-# Match summaries.
+
+# Check accepted SRL match summaries every 2 seconds.
 SUMMARY_INTERVAL = 2
 
-# Timeout for API requests.
+
 REQUEST_TIMEOUT = 15
 
-# Do not repeatedly send the same toss.
+
+# ============================================================
+# STATE FILES
+# ============================================================
+
 STATE_FILE = Path(
     "seen_tosses.json"
 )
 
-# Store discovered matches for debugging/recovery.
+
 MATCH_STATE_FILE = Path(
     "known_matches.json"
 )
 
-# Heartbeat file.
+
 HEARTBEAT_FILE = Path(
     "srl_toss_heartbeat.txt"
 )
 
 
 # ============================================================
-# SRL FILTER
+# SRL CRICKET ONLY
 # ============================================================
 
-# IMPORTANT:
-#
-# This does NOT assume every Sportradar cricket match is SRL.
-# The bot checks tournament/competition/season names and
-# only considers matches whose metadata looks like SRL.
-#
-# If your API returns the SRL fixtures but uses a different
-# tournament name, add that name here or set:
-#
-# SRL_ONLY=false
-#
-SRL_ONLY = os.getenv(
-    "SRL_ONLY",
-    "true",
-).lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-
-
-SRL_KEYWORDS = [
+SRL_KEYWORDS = (
     "simulated reality",
-    "simulated",
-    "srl",
-]
+    "simulated reality league",
+    "srl cricket",
+)
 
 
 # ============================================================
@@ -157,7 +152,7 @@ log = logging.getLogger(
 
 
 # ============================================================
-# HTTP
+# HTTP SESSION
 # ============================================================
 
 http = requests.Session()
@@ -182,7 +177,7 @@ known_matches = {}
 
 
 # ============================================================
-# LOAD JSON
+# JSON LOAD
 # ============================================================
 
 def load_json_file(
@@ -191,7 +186,6 @@ def load_json_file(
 ):
 
     if not path.exists():
-
         return default
 
     try:
@@ -214,7 +208,7 @@ def load_json_file(
 
 
 # ============================================================
-# SAVE JSON
+# JSON SAVE
 # ============================================================
 
 def save_json_file(
@@ -251,34 +245,42 @@ def load_state():
     global seen_tosses
     global known_matches
 
-    data = load_json_file(
+    toss_data = load_json_file(
         STATE_FILE,
         [],
     )
 
-    if isinstance(data, list):
+    if isinstance(
+        toss_data,
+        list,
+    ):
 
-        seen_tosses = set(
+        seen_tosses = {
             str(x)
-            for x in data
-        )
+            for x in toss_data
+        }
 
     else:
 
         seen_tosses = set()
 
-    matches = load_json_file(
+
+    match_data = load_json_file(
         MATCH_STATE_FILE,
         {},
     )
 
-    if isinstance(matches, dict):
+    if isinstance(
+        match_data,
+        dict,
+    ):
 
-        known_matches = matches
+        known_matches = match_data
 
     else:
 
         known_matches = {}
+
 
     log.info(
         "Loaded %s seen toss IDs",
@@ -312,7 +314,9 @@ def save_state():
 # HEARTBEAT
 # ============================================================
 
-def heartbeat(status):
+def heartbeat(
+    status,
+):
 
     try:
 
@@ -330,7 +334,7 @@ def heartbeat(status):
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM CONFIG
 # ============================================================
 
 def telegram_configured():
@@ -340,6 +344,10 @@ def telegram_configured():
         and TELEGRAM_CHAT_ID
     )
 
+
+# ============================================================
+# SEND TELEGRAM
+# ============================================================
 
 def send_telegram(
     message,
@@ -353,16 +361,19 @@ def send_telegram(
 
         return False
 
+
     url = (
         "https://api.telegram.org/"
         f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
+
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "disable_web_page_preview": True,
     }
+
 
     for attempt in range(1, 4):
 
@@ -374,15 +385,18 @@ def send_telegram(
                 timeout=REQUEST_TIMEOUT,
             )
 
+
             if response.status_code == 200:
 
                 return True
 
+
             log.error(
-                "Telegram HTTP %s: %s",
+                "Telegram HTTP %s | %s",
                 response.status_code,
                 response.text[:500],
             )
+
 
         except Exception as exc:
 
@@ -392,7 +406,9 @@ def send_telegram(
                 exc,
             )
 
+
         time.sleep(2)
+
 
     return False
 
@@ -406,18 +422,24 @@ def startup_message():
     return (
         "🟢 SRL TOSS API MONITOR ONLINE\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏏 Sportradar Cricket API\n"
-        "⚡ Live match monitoring\n"
+
+        "🏏 SRL CRICKET ONLY\n"
+        "📡 Sportradar Cricket API\n\n"
+
+        "⚡ Live schedule monitoring\n"
         f"🔄 Schedule: {SCHEDULE_INTERVAL}s\n"
-        f"⚡ Summary: {SUMMARY_INTERVAL}s\n"
+        f"⚡ Toss check: {SUMMARY_INTERVAL}s\n\n"
+
         "📡 Telegram: ACTIVE\n"
-        "🛡 Duplicate protection: ACTIVE\n\n"
+        "🛡 Duplicate protection: ACTIVE\n"
+        "🎯 SRL filter: ACTIVE\n\n"
+
         "Waiting for SRL toss data..."
     )
 
 
 # ============================================================
-# API REQUEST
+# API GET
 # ============================================================
 
 def api_get(
@@ -429,10 +451,12 @@ def api_get(
         f"{API_BASE}{path}"
     )
 
+
     headers = {
         "accept": "application/json",
         "x-api-key": SPORTRADAR_API_KEY,
     }
+
 
     try:
 
@@ -443,6 +467,7 @@ def api_get(
             timeout=REQUEST_TIMEOUT,
         )
 
+
     except requests.RequestException as exc:
 
         log.error(
@@ -451,6 +476,7 @@ def api_get(
         )
 
         return None
+
 
     if response.status_code != 200:
 
@@ -462,9 +488,11 @@ def api_get(
 
         return None
 
+
     try:
 
         return response.json()
+
 
     except ValueError as exc:
 
@@ -477,78 +505,79 @@ def api_get(
 
 
 # ============================================================
-# STRING HELPERS
+# STRING HELPER
 # ============================================================
 
-def text(value):
+def text(
+    value,
+):
 
     if value is None:
-
         return ""
 
     return str(value).strip()
 
 
-def contains_srl_keyword(
-    value,
-):
-
-    value = text(value).lower()
-
-    return any(
-        keyword in value
-        for keyword in SRL_KEYWORDS
-    )
-
-
 # ============================================================
-# GENERIC TEAM EXTRACTION
+# TEAM EXTRACTION
 # ============================================================
 
 def extract_team_names(
     event,
 ):
 
-    competitors = (
-        event.get(
-            "competitors",
-            [],
-        )
-        if isinstance(event, dict)
-        else []
+    if not isinstance(
+        event,
+        dict,
+    ):
+
+        return []
+
+
+    competitors = event.get(
+        "competitors",
+        [],
     )
+
 
     names = []
 
-    if isinstance(
+
+    if not isinstance(
         competitors,
         list,
     ):
 
-        for competitor in competitors:
+        return names
 
-            if not isinstance(
-                competitor,
-                dict,
-            ):
 
-                continue
+    for competitor in competitors:
 
-            name = (
-                competitor.get("name")
-                or competitor.get(
-                    "display_name"
-                )
-                or competitor.get(
-                    "short_name"
-                )
+        if not isinstance(
+            competitor,
+            dict,
+        ):
+
+            continue
+
+
+        name = (
+            competitor.get("name")
+            or competitor.get(
+                "display_name"
+            )
+            or competitor.get(
+                "short_name"
+            )
+        )
+
+
+        if name:
+
+            names.append(
+                text(name)
             )
 
-            if name:
-
-                names.append(
-                    text(name)
-                )
 
     return names
 
@@ -561,141 +590,197 @@ def extract_event_metadata(
     event,
 ):
 
+    if not isinstance(
+        event,
+        dict,
+    ):
+
+        return {
+            "tournament_name": "",
+            "tournament_id": "",
+            "category_name": "",
+            "category_id": "",
+            "season_name": "",
+            "season_id": "",
+            "sport_name": "",
+            "sport_id": "",
+        }
+
+
     tournament = event.get(
         "tournament",
         {},
     )
 
-    category = (
-        tournament.get(
-            "category",
-            {},
-        )
-        if isinstance(
-            tournament,
-            dict,
-        )
-        else {}
+
+    if not isinstance(
+        tournament,
+        dict,
+    ):
+
+        tournament = {}
+
+
+    category = tournament.get(
+        "category",
+        {},
     )
+
+
+    if not isinstance(
+        category,
+        dict,
+    ):
+
+        category = {}
+
+
+    sport = tournament.get(
+        "sport",
+        {},
+    )
+
+
+    if not isinstance(
+        sport,
+        dict,
+    ):
+
+        sport = {}
+
 
     season = event.get(
         "season",
         {},
     )
 
+
+    if not isinstance(
+        season,
+        dict,
+    ):
+
+        season = {}
+
+
     return {
         "tournament_name": text(
-            tournament.get(
-                "name"
-            )
-            if isinstance(
-                tournament,
-                dict,
-            )
-            else ""
+            tournament.get("name")
         ),
+
+        "tournament_id": text(
+            tournament.get("id")
+        ),
+
         "category_name": text(
-            category.get(
-                "name"
-            )
-            if isinstance(
-                category,
-                dict,
-            )
-            else ""
+            category.get("name")
         ),
+
+        "category_id": text(
+            category.get("id")
+        ),
+
         "season_name": text(
-            season.get(
-                "name"
-            )
-            if isinstance(
-                season,
-                dict,
-            )
-            else ""
+            season.get("name")
+        ),
+
+        "season_id": text(
+            season.get("id")
+        ),
+
+        "sport_name": text(
+            sport.get("name")
+        ),
+
+        "sport_id": text(
+            sport.get("id")
         ),
     }
 
 
 # ============================================================
-# SRL MATCH FILTER
+# SRL DETECTION
 # ============================================================
 
-# ============================================================
-# SRL MATCH FILTER — SRL CRICKET ONLY
-# ============================================================
+def is_srl_event(
+    event,
+):
 
-SRL_KEYWORDS = [
-    "simulated reality",
-    "simulated reality league",
-    "srl cricket",
-    "srl",
-]
+    if not isinstance(
+        event,
+        dict,
+    ):
 
-
-def is_srl_event(event):
-
-    if not isinstance(event, dict):
         return False
 
-    metadata = extract_event_metadata(event)
 
-    teams = extract_team_names(event)
-
-    tournament = metadata.get(
-        "tournament_name",
-        "",
+    metadata = extract_event_metadata(
+        event
     )
 
-    category = metadata.get(
-        "category_name",
-        "",
+
+    teams = extract_team_names(
+        event
     )
 
-    season = metadata.get(
-        "season_name",
-        "",
-    )
+
+    values = [
+        metadata["tournament_name"],
+        metadata["category_name"],
+        metadata["season_name"],
+        *teams,
+    ]
+
 
     combined = " ".join(
-        [
-            tournament,
-            category,
-            season,
-            *teams,
-        ]
+        values
     ).lower()
 
-    # --------------------------------------------------------
-    # Explicit SRL / Simulated Reality identification
-    # --------------------------------------------------------
-
-    if "simulated reality" in combined:
-        return True
-
-    if "simulated reality league" in combined:
-        return True
-
-    if "srl cricket" in combined:
-        return True
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # Do NOT treat a normal cricket competition such as
-    # IPL / CPL / T20 World Cup as SRL just because the
-    # competition itself is present.
-    #
-    # "srl" must actually appear in the returned metadata
-    # or team names.
+    # Must be cricket.
     # --------------------------------------------------------
 
-    if "srl" in combined:
-        return True
+    sport_name = (
+        metadata["sport_name"]
+        .lower()
+    )
+
+
+    sport_id = (
+        metadata["sport_id"]
+        .lower()
+    )
+
+
+    if (
+        sport_name
+        and "cricket" not in sport_name
+    ):
+
+        return False
+
+
+    # --------------------------------------------------------
+    # Explicit SRL identifiers.
+    # --------------------------------------------------------
+
+    for keyword in SRL_KEYWORDS:
+
+        if keyword in combined:
+
+            return True
+
+
+    # --------------------------------------------------------
+    # Log why an event was rejected.
+    # --------------------------------------------------------
 
     return False
 
+
 # ============================================================
-# EXTRACT EVENTS FROM SCHEDULE
+# EXTRACT SCHEDULE EVENTS
 # ============================================================
 
 def extract_schedule_events(
@@ -709,17 +794,14 @@ def extract_schedule_events(
 
         return []
 
+
     events = []
 
-    # --------------------------------------------------------
-    # Standard Sportradar location:
-    #
-    # sport_events
-    # --------------------------------------------------------
 
     sport_events = payload.get(
         "sport_events"
     )
+
 
     if isinstance(
         sport_events,
@@ -730,14 +812,11 @@ def extract_schedule_events(
             sport_events
         )
 
-    # --------------------------------------------------------
-    # Fallback:
-    # sport_event
-    # --------------------------------------------------------
 
     sport_event = payload.get(
         "sport_event"
     )
+
 
     if isinstance(
         sport_event,
@@ -748,11 +827,12 @@ def extract_schedule_events(
             sport_event
         )
 
+
     return events
 
 
 # ============================================================
-# DISCOVER LIVE MATCHES
+# DISCOVER SRL MATCHES
 # ============================================================
 
 def discover_live_matches():
@@ -761,71 +841,150 @@ def discover_live_matches():
         "Requesting Sportradar Daily Live Schedule..."
     )
 
+
     payload = api_get(
         "/schedules/live/schedule.json"
     )
 
+
     if payload is None:
+
         return []
+
 
     events = extract_schedule_events(
         payload
     )
+
 
     log.info(
         "Live schedule returned %s events",
         len(events),
     )
 
+
     matches = []
+
 
     for event in events:
 
-        if not isinstance(event, dict):
+        if not isinstance(
+            event,
+            dict,
+        ):
+
             continue
+
 
         event_id = text(
             event.get("id")
         )
 
+
         if not event_id:
+
             continue
+
 
         teams = extract_team_names(
             event
         )
 
+
         metadata = extract_event_metadata(
             event
         )
 
+
+        # ----------------------------------------------------
+        # RAW EVENT LOG
+        # ----------------------------------------------------
+
         log.info(
-            "LIVE EVENT | id=%s | teams=%s | "
-            "tournament=%s | category=%s | season=%s",
+            "LIVE EVENT | id=%s | "
+            "teams=%s | "
+            "sport=%s | "
+            "tournament=%s | "
+            "category=%s | "
+            "season=%s",
             event_id,
             " vs ".join(teams),
+            metadata["sport_name"],
             metadata["tournament_name"],
             metadata["category_name"],
             metadata["season_name"],
         )
 
-# ----------------------------------------------------
-# SRL ONLY
-# ----------------------------------------------------
 
-if not is_srl_event(event):
+        # ----------------------------------------------------
+        # SRL CRICKET ONLY
+        # ----------------------------------------------------
+
+        if not is_srl_event(event):
+
+            log.info(
+                "SKIP NON-SRL | id=%s | teams=%s",
+                event_id,
+                " vs ".join(teams),
+            )
+
+            continue
+
+
+        # ----------------------------------------------------
+        # SRL ACCEPTED
+        # ----------------------------------------------------
+
+        log.info(
+            "SRL MATCH ACCEPTED | "
+            "id=%s | teams=%s | tournament=%s",
+            event_id,
+            " vs ".join(teams),
+            metadata["tournament_name"],
+        )
+
+
+        record = {
+            "id": event_id,
+
+            "scheduled": text(
+                event.get("scheduled")
+            ),
+
+            "teams": teams,
+
+            "tournament": metadata[
+                "tournament_name"
+            ],
+
+            "category": metadata[
+                "category_name"
+            ],
+
+            "season": metadata[
+                "season_name"
+            ],
+        }
+
+
+        known_matches[event_id] = record
+
+        matches.append(record)
+
+
+    if matches:
+
+        save_state()
+
 
     log.info(
-        "SKIP NON-SRL | id=%s | teams=%s | "
-        "tournament=%s | category=%s | season=%s",
-        event_id,
-        " vs ".join(teams),
-        metadata["tournament_name"],
-        metadata["category_name"],
-        metadata["season_name"],
+        "SRL-filtered matches: %s",
+        len(matches),
     )
 
-    continue
+
+    return matches
+
 
 # ============================================================
 # MATCH SUMMARY
@@ -841,7 +1000,7 @@ def get_match_summary(
 
 
 # ============================================================
-# FIND NESTED DICTIONARY VALUE
+# FIND NESTED VALUE
 # ============================================================
 
 def find_value(
@@ -858,6 +1017,7 @@ def find_value(
 
             return obj[target_key]
 
+
         for value in obj.values():
 
             result = find_value(
@@ -865,9 +1025,11 @@ def find_value(
                 target_key,
             )
 
+
             if result is not None:
 
                 return result
+
 
     elif isinstance(
         obj,
@@ -881,9 +1043,11 @@ def find_value(
                 target_key,
             )
 
+
             if result is not None:
 
                 return result
+
 
     return None
 
@@ -898,6 +1062,7 @@ def build_competitor_map(
 
     result = {}
 
+
     def walk(obj):
 
         if isinstance(
@@ -909,6 +1074,7 @@ def build_competitor_map(
                 "id"
             )
 
+
             name = (
                 obj.get("name")
                 or obj.get(
@@ -918,6 +1084,7 @@ def build_competitor_map(
                     "short_name"
                 )
             )
+
 
             if (
                 competitor_id
@@ -933,9 +1100,11 @@ def build_competitor_map(
                     str(competitor_id)
                 ] = text(name)
 
+
             for value in obj.values():
 
                 walk(value)
+
 
         elif isinstance(
             obj,
@@ -946,13 +1115,15 @@ def build_competitor_map(
 
                 walk(item)
 
+
     walk(payload)
+
 
     return result
 
 
 # ============================================================
-# FIND TOSS
+# EXTRACT TOSS
 # ============================================================
 
 def extract_toss(
@@ -967,20 +1138,24 @@ def extract_toss(
 
         return None
 
+
     toss_won_by = find_value(
         payload,
         "toss_won_by",
     )
+
 
     toss_decision = find_value(
         payload,
         "toss_decision",
     )
 
+
     # No toss yet.
     if not toss_won_by:
 
         return None
+
 
     competitor_map = (
         build_competitor_map(
@@ -988,26 +1163,27 @@ def extract_toss(
         )
     )
 
+
+    winner_id = str(
+        toss_won_by
+    )
+
+
     winner_name = (
         competitor_map.get(
-            str(toss_won_by)
+            winner_id
         )
     )
 
+
     if not winner_name:
 
-        # Sometimes the API may expose the ID
-        # but not the competitor object in the
-        # same response.
-        winner_name = str(
-            toss_won_by
-        )
+        winner_name = winner_id
+
 
     return {
         "match_id": match_id,
-        "winner_id": str(
-            toss_won_by
-        ),
+        "winner_id": winner_id,
         "winner_name": winner_name,
         "decision": text(
             toss_decision
@@ -1029,13 +1205,36 @@ def make_toss_id(
         f"{toss['decision']}"
     )
 
-    return __import__(
-        "hashlib"
-    ).sha256(
-        raw.encode(
-            "utf-8"
-        )
+
+    return hashlib.sha256(
+        raw.encode("utf-8")
     ).hexdigest()[:32]
+
+
+# ============================================================
+# DECISION FORMAT
+# ============================================================
+
+def format_decision(
+    decision,
+):
+
+    value = text(
+        decision
+    ).lower()
+
+
+    decision_map = {
+        "bat": "Elected to bat",
+        "bowl": "Elected to bowl",
+        "field": "Elected to field",
+    }
+
+
+    return decision_map.get(
+        value,
+        decision or "Not reported",
+    )
 
 
 # ============================================================
@@ -1046,60 +1245,55 @@ def build_toss_message(
     toss,
 ):
 
+    # ALWAYS UTC.
     now = datetime.now(
         timezone.utc
-    ).astimezone()
-
-    decision = (
-        toss["decision"]
-        or "Not reported"
     )
 
-    decision_map = {
-        "bat": "Elected to bat",
-        "bowl": "Elected to bowl",
-        "field": "Elected to field",
-    }
-
-    decision_text = decision_map.get(
-        decision.lower(),
-        decision,
-    )
 
     match = known_matches.get(
         toss["match_id"],
         {},
     )
 
+
     teams = match.get(
         "teams",
         [],
     )
 
+
     tournament = match.get(
         "tournament",
-        "Cricket",
+        "",
     )
 
-    if teams:
 
-        fixture = " vs ".join(
-            teams
-        )
+    fixture = (
+        " vs ".join(teams)
+        if teams
+        else "SRL Match"
+    )
 
-    else:
 
-        fixture = "SRL Match"
+    decision_text = format_decision(
+        toss["decision"]
+    )
+
 
     return (
         "🏏 SRL TOSS ALERT\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
+
         f"🏆 {toss['winner_name']} "
         "WON THE TOSS\n\n"
+
         f"⚔️ {fixture}\n"
-        f"🏆 {tournament}\n\n"
+        f"🏆 {tournament or 'SRL Cricket'}\n\n"
+
         f"🎯 Decision: {decision_text}\n"
-        f"⏰ {now.strftime('%d %b %Y | %H:%M:%S %Z')}\n\n"
+        f"⏰ {now.strftime('%d %b %Y | %H:%M:%S UTC')}\n\n"
+
         "📡 Sportradar Cricket API\n"
         "🔔 LIVE TOSS MONITOR"
     )
@@ -1117,20 +1311,25 @@ def process_toss(
         toss
     )
 
+
     if identifier in seen_tosses:
 
         return False
 
+
     log.info(
-        "NEW TOSS: %s | %s | %s",
+        "NEW SRL TOSS | "
+        "%s | %s | %s",
         toss["match_id"],
         toss["winner_name"],
         toss["decision"],
     )
 
+
     message = build_toss_message(
         toss
     )
+
 
     if not send_telegram(
         message
@@ -1143,45 +1342,61 @@ def process_toss(
 
         return False
 
+
     seen_tosses.add(
         identifier
     )
 
+
     save_state()
 
+
     log.info(
-        "Toss Telegram alert SENT."
+        "SRL TOSS TELEGRAM ALERT SENT."
     )
+
 
     return True
 
 
 # ============================================================
-# CHECK MATCH
+# CHECK ONE MATCH
 # ============================================================
 
 def check_match(
     match,
 ):
 
-    match_id = match["id"]
+    match_id = match.get(
+        "id"
+    )
+
+
+    if not match_id:
+
+        return
+
 
     payload = get_match_summary(
         match_id
     )
 
+
     if payload is None:
 
         return
+
 
     toss = extract_toss(
         payload,
         match_id,
     )
 
+
     if toss is None:
 
         return
+
 
     process_toss(
         toss
@@ -1189,7 +1404,7 @@ def check_match(
 
 
 # ============================================================
-# CHECK ALL MATCHES
+# CHECK ALL SRL MATCHES
 # ============================================================
 
 def check_all_matches():
@@ -1198,9 +1413,11 @@ def check_all_matches():
 
         return
 
+
     matches = list(
         known_matches.values()
     )
+
 
     for match in matches:
 
@@ -1210,19 +1427,18 @@ def check_all_matches():
                 match
             )
 
+
         except Exception as exc:
 
             log.exception(
                 "Match check failed %s: %s",
-                match.get(
-                    "id"
-                ),
+                match.get("id"),
                 exc,
             )
 
 
 # ============================================================
-# API CONFIGURATION TEST
+# API TEST
 # ============================================================
 
 def test_api():
@@ -1235,13 +1451,16 @@ def test_api():
 
         return False
 
+
     log.info(
         "Testing Sportradar Cricket API..."
     )
 
+
     payload = api_get(
         "/schedules/live/schedule.json"
     )
+
 
     if payload is None:
 
@@ -1251,9 +1470,11 @@ def test_api():
 
         return False
 
+
     log.info(
         "Sportradar API connection OK."
     )
+
 
     return True
 
@@ -1269,8 +1490,9 @@ def main():
         SYSTEM_VERSION,
     )
 
+
     # --------------------------------------------------------
-    # Validate credentials.
+    # Credentials
     # --------------------------------------------------------
 
     if not SPORTRADAR_API_KEY:
@@ -1281,6 +1503,7 @@ def main():
 
         return
 
+
     if not telegram_configured():
 
         log.error(
@@ -1289,14 +1512,26 @@ def main():
 
         return
 
+
+    log.info(
+        "Sportradar API configuration detected."
+    )
+
+
+    log.info(
+        "Telegram configuration detected."
+    )
+
+
     # --------------------------------------------------------
-    # Load state.
+    # Load state
     # --------------------------------------------------------
 
     load_state()
 
+
     # --------------------------------------------------------
-    # API test.
+    # API test
     # --------------------------------------------------------
 
     if not test_api():
@@ -1308,8 +1543,9 @@ def main():
 
         return
 
+
     # --------------------------------------------------------
-    # Telegram startup.
+    # Startup Telegram
     # --------------------------------------------------------
 
     if send_telegram(
@@ -1326,11 +1562,13 @@ def main():
             "Startup Telegram message failed."
         )
 
+
     # --------------------------------------------------------
-    # Main polling loop.
+    # Main loop
     # --------------------------------------------------------
 
     last_schedule_check = 0
+
 
     while True:
 
@@ -1338,8 +1576,9 @@ def main():
 
             now = time.monotonic()
 
+
             # ------------------------------------------------
-            # Refresh live schedule.
+            # Refresh live schedule
             # ------------------------------------------------
 
             if (
@@ -1352,19 +1591,23 @@ def main():
 
                 last_schedule_check = now
 
+
             # ------------------------------------------------
-            # Check match summaries.
+            # Check SRL match summaries
             # ------------------------------------------------
 
             check_all_matches()
+
 
             heartbeat(
                 "ACTIVE"
             )
 
+
             time.sleep(
                 SUMMARY_INTERVAL
             )
+
 
         except KeyboardInterrupt:
 
@@ -1372,11 +1615,14 @@ def main():
                 "Stopped by user."
             )
 
+
             heartbeat(
                 "STOPPED"
             )
 
+
             break
+
 
         except Exception as exc:
 
@@ -1385,13 +1631,13 @@ def main():
                 exc,
             )
 
+
             heartbeat(
                 "ERROR - RECOVERING"
             )
 
-            time.sleep(
-                5
-            )
+
+            time.sleep(5)
 
 
 # ============================================================
