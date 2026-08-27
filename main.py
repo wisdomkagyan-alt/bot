@@ -723,7 +723,6 @@ def discover_live_matches():
     )
 
     if payload is None:
-
         return []
 
     events = extract_schedule_events(
@@ -739,27 +738,14 @@ def discover_live_matches():
 
     for event in events:
 
-        if not isinstance(
-            event,
-            dict,
-        ):
-
+        if not isinstance(event, dict):
             continue
 
         event_id = text(
-            event.get(
-                "id"
-            )
+            event.get("id")
         )
 
         if not event_id:
-
-            continue
-
-        if not is_srl_event(
-            event
-        ):
-
             continue
 
         teams = extract_team_names(
@@ -770,12 +756,27 @@ def discover_live_matches():
             event
         )
 
+        log.info(
+            "LIVE EVENT | id=%s | teams=%s | "
+            "tournament=%s | category=%s | season=%s",
+            event_id,
+            " vs ".join(teams),
+            metadata["tournament_name"],
+            metadata["category_name"],
+            metadata["season_name"],
+        )
+
+        # ----------------------------------------------------
+        # TEMPORARY:
+        # Do NOT filter SRL here.
+        #
+        # We need to see exactly what the API returns.
+        # ----------------------------------------------------
+
         record = {
             "id": event_id,
             "scheduled": text(
-                event.get(
-                    "scheduled"
-                )
+                event.get("scheduled")
             ),
             "teams": teams,
             "tournament": metadata[
@@ -789,36 +790,19 @@ def discover_live_matches():
             ],
         }
 
-        known_matches[
-            event_id
-        ] = record
+        known_matches[event_id] = record
 
-        matches.append(
-            record
-        )
+        matches.append(record)
 
     if matches:
-
         save_state()
 
     log.info(
-        "SRL-filtered matches: %s",
+        "ALL LIVE MATCHES STORED: %s",
         len(matches),
     )
 
-    for match in matches:
-
-        log.info(
-            "SRL MATCH | %s | %s | %s",
-            match["id"],
-            " vs ".join(
-                match["teams"]
-            ),
-            match["tournament"],
-        )
-
     return matches
-
 
 # ============================================================
 # MATCH SUMMARY
