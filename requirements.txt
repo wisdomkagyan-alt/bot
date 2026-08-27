@@ -4,3 +4,5 @@ ta
 yfinance
 requests
 numpy
+playwright==1.55.0
+requests==2.32.5
