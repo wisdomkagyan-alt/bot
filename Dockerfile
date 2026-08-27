@@ -3,7 +3,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    wget \
+    chromium \
+    chromium-driver \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -17,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     libnspr4 \
     libnss3 \
     libpango-1.0-0 \
+    libu2f-udev \
+    libvulkan1 \
     libwayland-client0 \
     libx11-6 \
     libx11-xcb1 \
@@ -26,7 +29,6 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxfixes3 \
     libxkbcommon0 \
-    libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -34,8 +36,6 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
-
-RUN playwright install --with-deps chromium
 
 COPY main.py .
 
