@@ -1,35 +1,48 @@
-
 # ============================================================
-# SRL TOSS MONITOR
+# SRL TOSS MONITOR 2026
+#
 # SPORTRADAR LIVE WEBSITE -> TELEGRAM
 #
-# Purpose:
-#   Monitor the live Sportradar Simulated Reality League
-#   cricket page and immediately send a Telegram alert when
-#   a new "won the toss" event appears.
-#
 # Website:
-#   https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket
+# https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket
 #
-# Detection:
-#   X won the toss
-#   X won the toss and elected to bat
-#   X won the toss and elected to field
+# PURPOSE
+# -------
+# Continuously monitor the rendered Sportradar SRL cricket
+# website and immediately send a Telegram alert whenever a
+# NEW "won the toss" event appears.
 #
-# Browser:
-#   Playwright Chromium
+# MONITORING
+# ----------
+# - Chromium / Playwright
+# - Main page DOM
+# - All iframes
+# - Rendered text
+# - DOM textContent
+# - Page HTML fallback
 #
-# Poll:
-#   Every 2 seconds
+# CHECK INTERVAL
+# --------------
+# 2 seconds
 #
-# Recovery:
-#   Browser/page reload every 5 minutes
+# DUPLICATE PROTECTION
+# --------------------
+# seen_tosses.json
 #
-# Duplicate protection:
-#   seen_tosses.json
+# IMPORTANT
+# ---------
+# Telegram credentials MUST be supplied through Railway
+# environment variables:
 #
-# IMPORTANT:
-#   Do NOT hard-code your Telegram bot token.
+# TELEGRAM_BOT_TOKEN
+# TELEGRAM_CHAT_ID
+#
+# DO NOT hard-code your Telegram bot token.
+# ============================================================
+
+
+# ============================================================
+# IMPORTS
 # ============================================================
 
 import asyncio
@@ -39,10 +52,12 @@ import logging
 import os
 import re
 import time
+
 from datetime import datetime
 from pathlib import Path
 
 import requests
+
 from playwright.async_api import (
     async_playwright,
     TimeoutError as PlaywrightTimeoutError,
@@ -50,7 +65,7 @@ from playwright.async_api import (
 
 
 # ============================================================
-# CONFIGURATION
+# SYSTEM CONFIGURATION
 # ============================================================
 
 SYSTEM_VERSION = "SRL-TOSS-MONITOR-2026"
@@ -60,34 +75,51 @@ WEBSITE_URL = (
     "pt/simulated-reality/cricket"
 )
 
-# How often the rendered page is checked.
-# 2 seconds gives near-immediate Telegram alerts.
+
+# ============================================================
+# MONITOR SETTINGS
+# ============================================================
+
+# Check the rendered page every 2 seconds.
 CHECK_INTERVAL = 2
 
-# Reload page periodically in case the SPA/websocket becomes stale.
+# Reload browser page every 5 minutes.
 PAGE_RELOAD_INTERVAL = 300
 
 # Browser timeout.
 PAGE_TIMEOUT = 30000
 
-# Keep browser visible while testing.
-# False = headless server mode.
+# Railway/server mode.
 HEADLESS = True
 
-# Existing tosses already visible when the program starts:
-#
+# Wait after opening/reloading website.
+INITIAL_WAIT = 5000
+
+# Wait after reload.
+RELOAD_WAIT = 5000
+
+
+# ============================================================
+# STARTUP BEHAVIOUR
+# ============================================================
+
 # False:
-#   Ignore old tosses and only alert on NEW tosses.
+#   Existing tosses already visible when the bot starts are
+#   marked as seen and NOT sent.
 #
 # True:
-#   Send alerts for tosses already visible on startup.
+#   Existing visible tosses are sent immediately.
 #
+# Recommended:
 ALERT_EXISTING_TOSSES_ON_START = False
 
 
 # ============================================================
-# TELEGRAM SECURITY
+# TELEGRAM
 # ============================================================
+
+# IMPORTANT:
+# These MUST exist before telegram_configured() is called.
 
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
@@ -104,9 +136,17 @@ TELEGRAM_CHAT_ID = os.getenv(
 # FILES
 # ============================================================
 
-STATE_FILE = Path("seen_tosses.json")
-HEARTBEAT_FILE = Path("srl_toss_heartbeat.txt")
-ERROR_LOG_FILE = Path("srl_toss_errors.log")
+STATE_FILE = Path(
+    "seen_tosses.json"
+)
+
+HEARTBEAT_FILE = Path(
+    "srl_toss_heartbeat.txt"
+)
+
+DEBUG_HTML_FILE = Path(
+    "srl_debug.html"
+)
 
 
 # ============================================================
@@ -115,74 +155,52 @@ ERROR_LOG_FILE = Path("srl_toss_errors.log")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    ),
 )
 
-log = logging.getLogger("SRL-TOSS-MONITOR")
+log = logging.getLogger(
+    "SRL-TOSS-MONITOR"
+)
 
 
 # ============================================================
-# HTTP SESSION
+# TELEGRAM HTTP SESSION
 # ============================================================
 
 telegram_http = requests.Session()
 
 
 # ============================================================
-# TOSS DETECTION
-# ============================================================
-
-# English:
-#
-#   South Africa SRL won the toss
-#   South Africa SRL won the toss and elected to bat
-#   South Africa SRL won the toss and elected to field
-#
-# We intentionally operate line-by-line because the rendered
-# page generally places the toss message in its own text line.
-
-ENGLISH_TOSS_PATTERNS = [
-    re.compile(
-        r"^(?P<team>.+?)\s+won\s+the\s+toss"
-        r"(?:\s+and\s+(?P<decision>elected\s+to\s+(?:bat|field)))?"
-        r"\s*$",
-        re.IGNORECASE,
-    ),
-]
-
-
-# Optional Portuguese support.
-# The URL contains /pt/, although the supplied screenshot shows
-# the rendered interface in English.
-PORTUGUESE_TOSS_PATTERNS = [
-    re.compile(
-        r"^(?P<team>.+?)\s+venceu\s+o\s+sorteio"
-        r"(?:\s+e\s+(?P<decision>escolheu\s+(?:rebater|campo)))?"
-        r"\s*$",
-        re.IGNORECASE,
-    ),
-]
-
-
-# ============================================================
-# STATE
+# GLOBAL STATE
 # ============================================================
 
 seen_tosses = set()
 
 
 # ============================================================
-# LOAD STATE
+# LOAD PERSISTENT STATE
 # ============================================================
 
 def load_state():
+
     global seen_tosses
 
     if not STATE_FILE.exists():
+
         seen_tosses = set()
+
+        log.info(
+            "No previous state file found."
+        )
+
         return
 
     try:
+
         data = json.loads(
             STATE_FILE.read_text(
                 encoding="utf-8"
@@ -190,12 +208,14 @@ def load_state():
         )
 
         if isinstance(data, list):
-            seen_tosses = set(
-                str(x)
-                for x in data
-            )
+
+            seen_tosses = {
+                str(item)
+                for item in data
+            }
 
         else:
+
             seen_tosses = set()
 
         log.info(
@@ -204,8 +224,9 @@ def load_state():
         )
 
     except Exception as exc:
+
         log.error(
-            "State file could not be loaded: %s",
+            "Could not load state: %s",
             exc,
         )
 
@@ -213,11 +234,13 @@ def load_state():
 
 
 # ============================================================
-# SAVE STATE
+# SAVE PERSISTENT STATE
 # ============================================================
 
 def save_state():
+
     try:
+
         STATE_FILE.write_text(
             json.dumps(
                 sorted(seen_tosses),
@@ -228,195 +251,264 @@ def save_state():
         )
 
     except Exception as exc:
+
         log.error(
-            "State save failed: %s",
+            "Could not save state: %s",
             exc,
         )
+
+
+# ============================================================
+# TEXT NORMALIZATION
+# ============================================================
+
+def clean_text(text):
+
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    text = text.replace(
+        "\u00a0",
+        " ",
+    )
+
+    text = text.replace(
+        "\r",
+        "\n",
+    )
+
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# TEAM NAME CLEANING
+# ============================================================
+
+def clean_team_name(team):
+
+    team = clean_text(team)
+
+    # Remove common accidental punctuation.
+    team = team.strip(
+        " -–—:|•·"
+    )
+
+    return team.strip()
+
+
+# ============================================================
+# TOSS PARSER
+# ============================================================
+
+def parse_toss_text(text):
+
+    if not text:
+        return []
+
+    text = clean_text(text)
+
+    results = []
+
+    # --------------------------------------------------------
+    # English
+    # --------------------------------------------------------
+
+    english_patterns = [
+
+        re.compile(
+            r"(?P<team>[A-Za-z0-9][A-Za-z0-9 .'\-&/()]{1,100}?)"
+            r"\s+won\s+the\s+toss"
+            r"(?:\s+and\s+"
+            r"(?P<decision>"
+            r"elected\s+to\s+(?:bat|field)"
+            r"))?",
+            re.IGNORECASE,
+        ),
+
+        re.compile(
+            r"(?P<team>[A-Za-z0-9][A-Za-z0-9 .'\-&/()]{1,100}?)"
+            r"\s+won\s+the\s+toss",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in english_patterns:
+
+        for match in pattern.finditer(text):
+
+            team = clean_team_name(
+                match.group("team")
+            )
+
+            decision = clean_text(
+                match.groupdict().get(
+                    "decision"
+                )
+                or ""
+            )
+
+            if not team:
+                continue
+
+            if len(team) < 3:
+                continue
+
+            if len(team) > 100:
+                continue
+
+            # SRL teams generally contain SRL.
+            # This prevents accidental matches elsewhere.
+            if "srl" not in team.lower():
+                continue
+
+            results.append(
+                {
+                    "team": team,
+                    "decision": decision,
+                    "text": clean_text(
+                        match.group(0)
+                    ),
+                    "language": "EN",
+                }
+            )
+
+    # --------------------------------------------------------
+    # Portuguese fallback
+    # --------------------------------------------------------
+
+    portuguese_patterns = [
+
+        re.compile(
+            r"(?P<team>[A-Za-z0-9][A-Za-z0-9 .'\-&/()]{1,100}?)"
+            r"\s+venceu\s+o\s+sorteio"
+            r"(?:\s+e\s+"
+            r"(?P<decision>"
+            r"escolheu\s+(?:rebater|campo)"
+            r"))?",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in portuguese_patterns:
+
+        for match in pattern.finditer(text):
+
+            team = clean_team_name(
+                match.group("team")
+            )
+
+            decision = clean_text(
+                match.groupdict().get(
+                    "decision"
+                )
+                or ""
+            )
+
+            if not team:
+                continue
+
+            if "srl" not in team.lower():
+                continue
+
+            results.append(
+                {
+                    "team": team,
+                    "decision": decision,
+                    "text": clean_text(
+                        match.group(0)
+                    ),
+                    "language": "PT",
+                }
+            )
+
+    # --------------------------------------------------------
+    # Deduplicate results.
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for item in results:
+
+        key = (
+            item["team"].lower(),
+            item["decision"].lower(),
+            item["text"].lower(),
+        )
+
+        unique[key] = item
+
+    return list(
+        unique.values()
+    )
 
 
 # ============================================================
 # EVENT ID
 # ============================================================
 
-def make_event_id(
-    team,
-    decision,
-    source_text,
-):
-    """
-    Creates a stable ID for one toss event.
-
-    We include the visible source text so that if the same team
-    appears in another match later, it is not automatically
-    treated as the same event.
-    """
+def make_event_id(toss):
 
     raw = (
-        f"{team.strip().lower()}|"
-        f"{decision.strip().lower()}|"
-        f"{source_text.strip().lower()}"
+        f"{toss['team'].strip().lower()}|"
+        f"{toss['decision'].strip().lower()}|"
+        f"{toss['text'].strip().lower()}"
     )
 
     return hashlib.sha256(
         raw.encode("utf-8")
-    ).hexdigest()[:24]
+    ).hexdigest()[:32]
 
 
 # ============================================================
-# TEXT CLEANING
-# ============================================================
-
-def clean_line(line):
-    if not line:
-        return ""
-
-    line = line.replace(
-        "\u00a0",
-        " ",
-    )
-
-    line = re.sub(
-        r"\s+",
-        " ",
-        line,
-    )
-
-    return line.strip()
-
-
-# ============================================================
-# PARSE TOSS LINE
-# ============================================================
-
-def parse_toss_line(line):
-    """
-    Returns:
-
-        {
-            "team": "...",
-            "decision": "...",
-            "text": "..."
-        }
-
-    or None.
-    """
-
-    original = clean_line(line)
-
-    if not original:
-        return None
-
-    # --------------------------------------------------------
-    # English
-    # --------------------------------------------------------
-
-    for pattern in ENGLISH_TOSS_PATTERNS:
-        match = pattern.search(original)
-
-        if match:
-            team = clean_line(
-                match.group("team")
-            )
-
-            decision = clean_line(
-                match.group("decision")
-                or ""
-            )
-
-            return {
-                "team": team,
-                "decision": decision,
-                "text": original,
-                "language": "EN",
-            }
-
-    # --------------------------------------------------------
-    # Portuguese
-    # --------------------------------------------------------
-
-    for pattern in PORTUGUESE_TOSS_PATTERNS:
-        match = pattern.search(original)
-
-        if match:
-            team = clean_line(
-                match.group("team")
-            )
-
-            decision = clean_line(
-                match.group("decision")
-                or ""
-            )
-
-            return {
-                "team": team,
-                "decision": decision,
-                "text": original,
-                "language": "PT",
-            }
-
-    return None
-
-
-# ============================================================
-# EXTRACT TOSSES FROM PAGE
-# ============================================================
-
-def extract_tosses(page_text):
-    """
-    Scan the complete rendered page.
-
-    Returns unique toss records.
-    """
-
-    results = []
-
-    lines = page_text.splitlines()
-
-    for line in lines:
-        line = clean_line(line)
-
-        if not line:
-            continue
-
-        toss = parse_toss_line(line)
-
-        if toss is None:
-            continue
-
-        results.append(toss)
-
-    # Remove duplicates within one page scan.
-    unique = {}
-
-    for toss in results:
-        key = (
-            toss["team"].lower(),
-            toss["decision"].lower(),
-            toss["text"].lower(),
-        )
-
-        unique[key] = toss
-
-    return list(unique.values())
-
-
-# ============================================================
-# TELEGRAM
+# TELEGRAM CONFIGURATION CHECK
 # ============================================================
 
 def telegram_configured():
+
     return bool(
         TELEGRAM_BOT_TOKEN
         and TELEGRAM_CHAT_ID
     )
 
 
+# ============================================================
+# TELEGRAM SEND
+# ============================================================
+
 def send_telegram(message):
+
     if not telegram_configured():
+
         log.error(
-            "Telegram credentials are missing. "
-            "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            "Telegram is NOT configured."
         )
+
+        log.error(
+            "Required variables:"
+        )
+
+        log.error(
+            "TELEGRAM_BOT_TOKEN"
+        )
+
+        log.error(
+            "TELEGRAM_CHAT_ID"
+        )
+
         return False
 
     url = (
@@ -433,6 +525,7 @@ def send_telegram(message):
     for attempt in range(1, 4):
 
         try:
+
             response = telegram_http.post(
                 url,
                 json=payload,
@@ -440,6 +533,7 @@ def send_telegram(message):
             )
 
             if response.status_code == 200:
+
                 return True
 
             log.error(
@@ -449,6 +543,7 @@ def send_telegram(message):
             )
 
         except Exception as exc:
+
             log.error(
                 "Telegram attempt %s failed: %s",
                 attempt,
@@ -461,19 +556,45 @@ def send_telegram(message):
 
 
 # ============================================================
-# TOSS MESSAGE
+# STARTUP MESSAGE
+# ============================================================
+
+def startup_message():
+
+    return (
+        "🟢 SRL TOSS MONITOR ONLINE\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🏏 Sportradar SRL Cricket\n"
+        "⚡ Live webpage monitoring\n"
+        f"🔄 Check interval: {CHECK_INTERVAL}s\n"
+        "📡 Telegram alerts: ACTIVE\n"
+        "🛡 Duplicate protection: ACTIVE\n"
+        "🌐 Browser engine: Chromium\n\n"
+        "Waiting for the next toss..."
+    )
+
+
+# ============================================================
+# TOSS TELEGRAM MESSAGE
 # ============================================================
 
 def build_toss_message(toss):
+
     now = datetime.now().astimezone()
 
     team = toss["team"]
+
     decision = toss["decision"]
 
     if decision:
+
         decision_text = decision
+
     else:
-        decision_text = "Decision not shown"
+
+        decision_text = (
+            "Decision not shown"
+        )
 
     return (
         "🏏 SRL TOSS ALERT\n"
@@ -483,38 +604,22 @@ def build_toss_message(toss):
         f"🎯 Decision: {decision_text}\n"
         f"⏰ {now.strftime('%d %b %Y | %H:%M:%S %Z')}\n\n"
         "🌐 Sportradar Simulated Reality League\n"
-        "🔔 LIVE TOSS MONITOR\n\n"
-        f"🔗 {WEBSITE_URL}"
+        "🔔 LIVE TOSS MONITOR"
     )
 
 
 # ============================================================
-# STARTUP MESSAGE
+# ERROR TELEGRAM MESSAGE
 # ============================================================
 
-def startup_message():
-    return (
-        "🟢 SRL TOSS MONITOR ONLINE\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏏 Sportradar SRL Cricket\n"
-        "⚡ Live webpage monitoring\n"
-        f"🔄 Check interval: {CHECK_INTERVAL}s\n"
-        "📡 Telegram alerts: ACTIVE\n"
-        "🛡 Duplicate protection: ACTIVE\n\n"
-        "Waiting for the next toss..."
-    )
+def build_error_message(exc):
 
-
-# ============================================================
-# ERROR MESSAGE
-# ============================================================
-
-def error_message(exc):
     return (
         "🔴 SRL TOSS MONITOR ERROR\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{type(exc).__name__}: {exc}\n\n"
-        "The monitor will attempt recovery automatically."
+        f"Error: {type(exc).__name__}\n"
+        f"Message: {str(exc)[:500]}\n\n"
+        "Automatic recovery will be attempted."
     )
 
 
@@ -522,8 +627,10 @@ def error_message(exc):
 # HEARTBEAT
 # ============================================================
 
-def write_heartbeat(status="ACTIVE"):
+def write_heartbeat(status):
+
     try:
+
         HEARTBEAT_FILE.write_text(
             (
                 f"{datetime.now().astimezone().isoformat()} | "
@@ -538,16 +645,54 @@ def write_heartbeat(status="ACTIVE"):
 
 
 # ============================================================
-# PAGE HEALTH
+# PROCESS NEW TOSS
 # ============================================================
 
-async def page_is_alive(page):
-    try:
-        await page.locator("body").count()
+def process_toss(toss):
+
+    event_id = make_event_id(
+        toss
+    )
+
+    # Already sent.
+    if event_id in seen_tosses:
+
+        return False
+
+    log.info(
+        "NEW TOSS DETECTED: %s",
+        toss["text"],
+    )
+
+    message = build_toss_message(
+        toss
+    )
+
+    success = send_telegram(
+        message
+    )
+
+    if success:
+
+        seen_tosses.add(
+            event_id
+        )
+
+        save_state()
+
+        log.info(
+            "Telegram alert SENT: %s",
+            toss["text"],
+        )
+
         return True
 
-    except Exception:
-        return False
+    log.error(
+        "Telegram failed. "
+        "Event will be retried."
+    )
+
+    return False
 
 
 # ============================================================
@@ -555,17 +700,13 @@ async def page_is_alive(page):
 # ============================================================
 
 def baseline_current_tosses(tosses):
-    """
-    On first startup we normally DO NOT send old tosses.
-
-    We mark everything currently visible as already seen.
-    This means:
-        06:21 old toss -> ignored
-        07:21 new toss -> alert
-        08:21 new toss -> alert
-    """
 
     if ALERT_EXISTING_TOSSES_ON_START:
+
+        log.info(
+            "Startup alert mode enabled."
+        )
+
         return
 
     added = 0
@@ -573,94 +714,569 @@ def baseline_current_tosses(tosses):
     for toss in tosses:
 
         event_id = make_event_id(
-            toss["team"],
-            toss["decision"],
-            toss["text"],
+            toss
         )
 
         if event_id not in seen_tosses:
-            seen_tosses.add(event_id)
+
+            seen_tosses.add(
+                event_id
+            )
+
             added += 1
 
     if added:
+
         save_state()
 
     log.info(
-        "Startup baseline complete | %s existing tosses marked seen",
+        "Startup baseline complete | "
+        "%s existing tosses marked seen",
         added,
     )
 
 
 # ============================================================
-# PROCESS NEW TOSS
+# PAGE TEXT EXTRACTION
 # ============================================================
 
-def process_toss(toss):
-    event_id = make_event_id(
-        toss["team"],
-        toss["decision"],
-        toss["text"],
-    )
+async def get_main_page_text(page):
 
-    if event_id in seen_tosses:
-        return False
+    pieces = []
 
-    message = build_toss_message(toss)
+    # --------------------------------------------------------
+    # inner_text
+    # --------------------------------------------------------
 
-    log.info(
-        "NEW TOSS DETECTED | %s",
-        toss["text"],
-    )
+    try:
 
-    success = send_telegram(message)
-
-    if success:
-        seen_tosses.add(event_id)
-        save_state()
-
-        log.info(
-            "Telegram toss alert sent | %s",
-            toss["text"],
+        text = await page.locator(
+            "body"
+        ).inner_text(
+            timeout=5000
         )
 
-        return True
+        if text:
 
-    log.error(
-        "Telegram failed; event remains unacknowledged."
+            pieces.append(
+                text
+            )
+
+    except Exception as exc:
+
+        log.debug(
+            "body.inner_text failed: %s",
+            exc,
+        )
+
+    # --------------------------------------------------------
+    # text_content
+    # --------------------------------------------------------
+
+    try:
+
+        text = await page.locator(
+            "body"
+        ).text_content(
+            timeout=5000
+        )
+
+        if text:
+
+            pieces.append(
+                text
+            )
+
+    except Exception as exc:
+
+        log.debug(
+            "body.text_content failed: %s",
+            exc,
+        )
+
+    return "\n".join(
+        pieces
     )
 
-    return False
+
+# ============================================================
+# IFRAME TEXT EXTRACTION
+# ============================================================
+
+async def get_frame_text(page):
+
+    pieces = []
+
+    frames = page.frames
+
+    if len(frames) > 1:
+
+        log.info(
+            "Detected %s browser frames",
+            len(frames),
+        )
+
+    for index, frame in enumerate(
+        frames
+    ):
+
+        if frame == page.main_frame:
+
+            continue
+
+        try:
+
+            text = await frame.locator(
+                "body"
+            ).inner_text(
+                timeout=3000
+            )
+
+            if text:
+
+                log.info(
+                    "Iframe %s text length: %s",
+                    index,
+                    len(text),
+                )
+
+                pieces.append(
+                    text
+                )
+
+        except Exception as exc:
+
+            log.debug(
+                "Iframe %s read failed: %s",
+                index,
+                exc,
+            )
+
+    return "\n".join(
+        pieces
+    )
 
 
 # ============================================================
-# PAGE MONITOR
+# FULL PAGE HTML
 # ============================================================
 
-async def monitor_page(page):
+async def get_page_html(page):
+
+    try:
+
+        return await page.content()
+
+    except Exception as exc:
+
+        log.debug(
+            "Page HTML extraction failed: %s",
+            exc,
+        )
+
+        return ""
+
+
+# ============================================================
+# EXTRACT TOSSES FROM PAGE
+# ============================================================
+
+async def extract_tosses_from_page(page):
+
+    main_text = await get_main_page_text(
+        page
+    )
+
+    frame_text = await get_frame_text(
+        page
+    )
+
+    combined_text = (
+        main_text
+        + "\n"
+        + frame_text
+    )
+
+    tosses = parse_toss_text(
+        combined_text
+    )
+
+    # --------------------------------------------------------
+    # HTML fallback
+    # --------------------------------------------------------
+
+    if not tosses:
+
+        html = await get_page_html(
+            page
+        )
+
+        if html:
+
+            html_tosses = parse_toss_text(
+                html
+            )
+
+            if html_tosses:
+
+                log.info(
+                    "Toss detected from HTML fallback."
+                )
+
+                tosses.extend(
+                    html_tosses
+                )
+
+    # --------------------------------------------------------
+    # Deduplicate.
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for toss in tosses:
+
+        key = make_event_id(
+            toss
+        )
+
+        unique[key] = toss
+
+    return (
+        list(
+            unique.values()
+        ),
+        combined_text,
+    )
+
+
+# ============================================================
+# PAGE DIAGNOSTICS
+# ============================================================
+
+async def log_page_diagnostics(
+    page,
+    page_text,
+    force=False,
+):
+
+    if (
+        not force
+        and not page_text
+    ):
+
+        return
+
+    try:
+
+        title = await page.title()
+
+    except Exception:
+
+        title = "UNKNOWN"
+
+    log.info(
+        "Browser URL: %s",
+        page.url,
+    )
+
+    log.info(
+        "Browser title: %s",
+        title,
+    )
+
+    log.info(
+        "Number of frames: %s",
+        len(page.frames),
+    )
+
+    log.info(
+        "Rendered page text length: %s",
+        len(page_text),
+    )
+
+    if page_text:
+
+        preview = re.sub(
+            r"\s+",
+            " ",
+            page_text,
+        )
+
+        preview = preview[:1500]
+
+        log.info(
+            "PAGE PREVIEW: %s",
+            preview,
+        )
+
+
+# ============================================================
+# DEBUG PAGE SAVE
+# ============================================================
+
+async def save_debug_page(
+    page
+):
+
+    try:
+
+        html = await page.content()
+
+        DEBUG_HTML_FILE.write_text(
+            html,
+            encoding="utf-8",
+        )
+
+        log.info(
+            "Saved debug HTML: %s",
+            DEBUG_HTML_FILE,
+        )
+
+    except Exception as exc:
+
+        log.warning(
+            "Could not save debug HTML: %s",
+            exc,
+        )
+
+
+# ============================================================
+# DEBUG SCREENSHOT
+# ============================================================
+
+async def save_debug_screenshot(
+    page
+):
+
+    try:
+
+        await page.screenshot(
+            path="srl_debug.png",
+            full_page=True,
+        )
+
+        log.info(
+            "Saved debug screenshot: srl_debug.png"
+        )
+
+    except Exception as exc:
+
+        log.warning(
+            "Could not save screenshot: %s",
+            exc,
+        )
+
+
+# ============================================================
+# NETWORK MONITOR
+# ============================================================
+
+def setup_network_monitor(
+    page
+):
+
+    async def handle_response(
+        response
+    ):
+
+        try:
+
+            url = response.url
+
+            # We are interested primarily in API/data responses.
+            interesting = any(
+                keyword in url.lower()
+                for keyword in [
+                    "api",
+                    "cricket",
+                    "match",
+                    "event",
+                    "score",
+                    "sport",
+                    "simulated",
+                    "reality",
+                    "live",
+                    "feed",
+                ]
+            )
+
+            if not interesting:
+
+                return
+
+            content_type = (
+                response.headers.get(
+                    "content-type",
+                    "",
+                )
+                .lower()
+            )
+
+            # Avoid downloading large images/fonts/etc.
+            if not any(
+                item in content_type
+                for item in [
+                    "json",
+                    "text",
+                    "javascript",
+                    "xml",
+                ]
+            ):
+
+                return
+
+            try:
+
+                body = await response.text()
+
+            except Exception:
+
+                return
+
+            if not body:
+
+                return
+
+            # ------------------------------------------------
+            # Look for toss directly inside network payload.
+            # ------------------------------------------------
+
+            tosses = parse_toss_text(
+                body
+            )
+
+            for toss in tosses:
+
+                log.info(
+                    "NETWORK TOSS DETECTED: %s",
+                    toss["text"],
+                )
+
+                process_toss(
+                    toss
+                )
+
+        except Exception as exc:
+
+            # Network events are supplementary.
+            # Never crash the main monitor because of them.
+            log.debug(
+                "Network response handler error: %s",
+                exc,
+            )
+
+    page.on(
+        "response",
+        handle_response,
+    )
+
+
+# ============================================================
+# PAGE LOAD
+# ============================================================
+
+async def open_page(
+    page
+):
+
+    log.info(
+        "Opening Sportradar SRL page..."
+    )
+
+    await page.goto(
+        WEBSITE_URL,
+        wait_until="domcontentloaded",
+        timeout=PAGE_TIMEOUT,
+    )
+
+    log.info(
+        "Page loaded. Waiting for dynamic content..."
+    )
+
+    await page.wait_for_timeout(
+        INITIAL_WAIT
+    )
+
+    await log_page_diagnostics(
+        page,
+        "",
+        force=True,
+    )
+
+
+# ============================================================
+# LIVE MONITOR
+# ============================================================
+
+async def monitor_page(
+    page
+):
+
     first_scan = True
-    last_reload = time.monotonic()
+
+    last_reload = (
+        time.monotonic()
+    )
+
+    diagnostic_counter = 0
+
+    last_page_length = None
 
     while True:
 
         try:
 
             # ------------------------------------------------
-            # Get rendered page text.
+            # Read website.
             # ------------------------------------------------
 
-            page_text = await page.locator(
-                "body"
-            ).inner_text(
-                timeout=10000
+            tosses, page_text = (
+                await extract_tosses_from_page(
+                    page
+                )
             )
 
             # ------------------------------------------------
-            # Extract current tosses.
+            # Diagnostics every ~60 seconds.
             # ------------------------------------------------
 
-            tosses = extract_tosses(
-                page_text
-            )
+            diagnostic_counter += 1
+
+            if (
+                diagnostic_counter % 30 == 0
+                or (
+                    last_page_length !=
+                    len(page_text)
+                )
+            ):
+
+                await log_page_diagnostics(
+                    page,
+                    page_text,
+                )
+
+                last_page_length = (
+                    len(page_text)
+                )
+
+            # ------------------------------------------------
+            # Tosses found.
+            # ------------------------------------------------
+
+            if tosses:
+
+                log.info(
+                    "Current page contains "
+                    "%s toss event(s)",
+                    len(tosses),
+                )
+
+                for toss in tosses:
+
+                    log.info(
+                        "FOUND: %s",
+                        toss["text"],
+                    )
 
             # ------------------------------------------------
             # First scan.
@@ -669,7 +1285,8 @@ async def monitor_page(page):
             if first_scan:
 
                 log.info(
-                    "Initial page scan found %s toss event(s)",
+                    "Initial page scan found "
+                    "%s toss event(s)",
                     len(tosses),
                 )
 
@@ -677,23 +1294,29 @@ async def monitor_page(page):
                     tosses
                 )
 
-                # If explicitly configured to alert on
-                # currently visible tosses:
-                if ALERT_EXISTING_TOSSES_ON_START:
+                if (
+                    ALERT_EXISTING_TOSSES_ON_START
+                ):
 
                     for toss in tosses:
-                        process_toss(toss)
+
+                        process_toss(
+                            toss
+                        )
 
                 first_scan = False
 
             else:
 
                 # --------------------------------------------
-                # Detect new tosses.
+                # Every later scan.
                 # --------------------------------------------
 
                 for toss in tosses:
-                    process_toss(toss)
+
+                    process_toss(
+                        toss
+                    )
 
             # ------------------------------------------------
             # Heartbeat.
@@ -712,7 +1335,10 @@ async def monitor_page(page):
                 - last_reload
             )
 
-            if elapsed >= PAGE_RELOAD_INTERVAL:
+            if (
+                elapsed
+                >= PAGE_RELOAD_INTERVAL
+            ):
 
                 log.info(
                     "Periodic page reload..."
@@ -724,7 +1350,7 @@ async def monitor_page(page):
                 )
 
                 await page.wait_for_timeout(
-                    3000
+                    RELOAD_WAIT
                 )
 
                 last_reload = (
@@ -732,11 +1358,11 @@ async def monitor_page(page):
                 )
 
                 log.info(
-                    "Page reload complete"
+                    "Page reload complete."
                 )
 
             # ------------------------------------------------
-            # Wait before next scan.
+            # Next scan.
             # ------------------------------------------------
 
             await asyncio.sleep(
@@ -754,18 +1380,15 @@ async def monitor_page(page):
                 "PAGE TIMEOUT"
             )
 
-            await asyncio.sleep(
-                3
-            )
-
             try:
+
                 await page.reload(
                     wait_until="domcontentloaded",
                     timeout=PAGE_TIMEOUT,
                 )
 
                 await page.wait_for_timeout(
-                    3000
+                    RELOAD_WAIT
                 )
 
                 last_reload = (
@@ -779,23 +1402,20 @@ async def monitor_page(page):
                     reload_exc,
                 )
 
-                await asyncio.sleep(
-                    5
-                )
+            await asyncio.sleep(
+                3
+            )
 
         except Exception as exc:
 
             log.exception(
-                "Monitor loop error"
+                "Monitor loop error: %s",
+                exc,
             )
 
             write_heartbeat(
                 "ERROR"
             )
-
-            # Do not send Telegram for every scan error.
-            # Otherwise a temporary website failure could
-            # flood the Telegram chat.
 
             await asyncio.sleep(
                 5
@@ -803,10 +1423,11 @@ async def monitor_page(page):
 
 
 # ============================================================
-# BROWSER
+# BROWSER ENGINE
 # ============================================================
 
 async def run_browser():
+
     async with async_playwright() as p:
 
         log.info(
@@ -814,21 +1435,29 @@ async def run_browser():
         )
 
         browser = await p.chromium.launch(
+
             headless=HEADLESS,
+
             args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
                 "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
             ],
         )
 
         context = await browser.new_context(
+
             viewport={
                 "width": 1440,
                 "height": 1000,
             },
+
             locale="en-US",
+
             timezone_id="Asia/Kolkata",
+
             user_agent=(
                 "Mozilla/5.0 "
                 "(Windows NT 10.0; Win64; x64) "
@@ -841,29 +1470,27 @@ async def run_browser():
 
         page = await context.new_page()
 
+        # ----------------------------------------------------
+        # Network monitoring.
+        # ----------------------------------------------------
+
+        setup_network_monitor(
+            page
+        )
+
         try:
 
-            log.info(
-                "Opening Sportradar SRL page..."
+            # ------------------------------------------------
+            # Open website.
+            # ------------------------------------------------
+
+            await open_page(
+                page
             )
 
-            await page.goto(
-                WEBSITE_URL,
-                wait_until="domcontentloaded",
-                timeout=PAGE_TIMEOUT,
-            )
-
-            log.info(
-                "Page loaded. Waiting for dynamic content..."
-            )
-
-            await page.wait_for_timeout(
-                5000
-            )
-
-            log.info(
-                "Starting live toss monitor."
-            )
+            # ------------------------------------------------
+            # Monitor continuously.
+            # ------------------------------------------------
 
             await monitor_page(
                 page
@@ -872,6 +1499,7 @@ async def run_browser():
         finally:
 
             await context.close()
+
             await browser.close()
 
 
@@ -887,33 +1515,50 @@ async def main():
     )
 
     # --------------------------------------------------------
-    # Security check.
+    # Telegram check.
     # --------------------------------------------------------
 
     if not telegram_configured():
 
         log.warning(
-            "Telegram credentials are not configured."
+            "Telegram credentials are missing."
         )
 
         log.warning(
-            "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            "Set TELEGRAM_BOT_TOKEN and "
+            "TELEGRAM_CHAT_ID in Railway Variables."
         )
 
     else:
 
-        send_telegram(
+        log.info(
+            "Telegram configuration detected."
+        )
+
+        sent = send_telegram(
             startup_message()
         )
 
+        if sent:
+
+            log.info(
+                "Startup Telegram message sent."
+            )
+
+        else:
+
+            log.error(
+                "Startup Telegram message failed."
+            )
+
     # --------------------------------------------------------
-    # Load persistent state.
+    # Load duplicate state.
     # --------------------------------------------------------
 
     load_state()
 
     # --------------------------------------------------------
-    # Main recovery loop.
+    # Browser recovery loop.
     # --------------------------------------------------------
 
     while True:
@@ -945,10 +1590,13 @@ async def main():
                 "BROWSER CRASH - RECOVERING"
             )
 
-            # Notify only once per browser crash.
+            # Avoid Telegram flooding.
             if telegram_configured():
+
                 send_telegram(
-                    error_message(exc)
+                    build_error_message(
+                        exc
+                    )
                 )
 
             log.info(
@@ -961,12 +1609,13 @@ async def main():
 
 
 # ============================================================
-# ENTRY
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
 
     try:
+
         asyncio.run(
             main()
         )
