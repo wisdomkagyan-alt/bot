@@ -1,19 +1,24 @@
 # ============================================================
-# SRL TOSS MONITOR 2026
-#
-# Sportradar SRL Sportcentre Cricket
-# Selenium + Chrome WebDriver -> Telegram
+# SRL TOSS SELENIUM MONITOR 2026
 #
 # SRL CRICKET ONLY
 #
-# NO generic Sportradar Cricket API
-# NO Playwright
-# NO API schedule endpoint
+# Source:
+# https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket
 #
-# Railway Variables:
+# Selenium + Chromium
+# Rendered page detection
+# Telegram immediate toss alerts
 #
-#   TELEGRAM_BOT_TOKEN
-#   TELEGRAM_CHAT_ID
+# Detects:
+#
+#   "South Africa SRL won the toss and elected to bat"
+#   "India SRL won the toss and elected to bowl"
+#
+# Also supports completed-match backup:
+#
+#   "(Toss:SA)"
+#   "(Toss:IND)"
 #
 # ============================================================
 
@@ -24,15 +29,14 @@ import os
 import re
 import time
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import requests
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
 
 
 # ============================================================
@@ -46,19 +50,14 @@ SRL_URL = (
     "pt/simulated-reality/cricket"
 )
 
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
-    "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU"
+    "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU",
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
-    "8783763018"
+    "8783763018",
 ).strip()
 
 
@@ -66,19 +65,13 @@ TELEGRAM_CHAT_ID = os.getenv(
 # MONITOR SETTINGS
 # ============================================================
 
-# How often Selenium scans the already-open page.
-SCAN_INTERVAL = 2
+# Check rendered page every second.
+CHECK_INTERVAL = 1
 
-# Reload page periodically so newly-rendered data is obtained.
-PAGE_REFRESH_INTERVAL = 30
+# Refresh browser periodically so newly published
+# information is definitely loaded.
+PAGE_REFRESH_INTERVAL = 15
 
-# Initial page wait.
-PAGE_LOAD_WAIT = 8
-
-# Selenium page-load timeout.
-PAGE_LOAD_TIMEOUT = 30
-
-# HTTP timeout for Telegram.
 REQUEST_TIMEOUT = 15
 
 
@@ -87,7 +80,7 @@ REQUEST_TIMEOUT = 15
 # ============================================================
 
 STATE_FILE = Path(
-    "seen_srl_tosses.json"
+    "srl_seen_tosses.json"
 )
 
 HEARTBEAT_FILE = Path(
@@ -133,32 +126,7 @@ http.headers.update(
 
 
 # ============================================================
-# TEXT HELPERS
-# ============================================================
-
-def clean_text(value):
-
-    if value is None:
-        return ""
-
-    value = str(value)
-
-    value = value.replace(
-        "\xa0",
-        " "
-    )
-
-    value = re.sub(
-        r"\s+",
-        " ",
-        value
-    )
-
-    return value.strip()
-
-
-# ============================================================
-# STATE LOAD
+# LOAD STATE
 # ============================================================
 
 def load_state():
@@ -167,11 +135,11 @@ def load_state():
 
     if not STATE_FILE.exists():
 
+        seen_tosses = set()
+
         log.info(
             "No previous SRL toss state found."
         )
-
-        seen_tosses = set()
 
         return
 
@@ -183,14 +151,11 @@ def load_state():
             )
         )
 
-        if isinstance(
-            data,
-            list,
-        ):
+        if isinstance(data, list):
 
             seen_tosses = {
-                str(item)
-                for item in data
+                str(x)
+                for x in data
             }
 
         else:
@@ -198,14 +163,14 @@ def load_state():
             seen_tosses = set()
 
         log.info(
-            "Loaded %s previously seen SRL tosses.",
+            "Loaded %s previous SRL tosses.",
             len(seen_tosses),
         )
 
     except Exception as exc:
 
         log.warning(
-            "Could not load state: %s",
+            "Could not load toss state: %s",
             exc,
         )
 
@@ -213,7 +178,7 @@ def load_state():
 
 
 # ============================================================
-# STATE SAVE
+# SAVE STATE
 # ============================================================
 
 def save_state():
@@ -222,9 +187,7 @@ def save_state():
 
         STATE_FILE.write_text(
             json.dumps(
-                sorted(
-                    seen_tosses
-                ),
+                sorted(seen_tosses),
                 indent=2,
                 ensure_ascii=False,
             ),
@@ -234,7 +197,7 @@ def save_state():
     except Exception as exc:
 
         log.error(
-            "Could not save state: %s",
+            "Could not save toss state: %s",
             exc,
         )
 
@@ -243,9 +206,7 @@ def save_state():
 # HEARTBEAT
 # ============================================================
 
-def heartbeat(
-    status
-):
+def heartbeat(status):
 
     try:
 
@@ -259,7 +220,6 @@ def heartbeat(
         )
 
     except Exception:
-
         pass
 
 
@@ -279,14 +239,12 @@ def telegram_configured():
 # SEND TELEGRAM
 # ============================================================
 
-def send_telegram(
-    message
-):
+def send_telegram(message):
 
     if not telegram_configured():
 
         log.error(
-            "Telegram credentials are missing."
+            "Telegram credentials missing."
         )
 
         return False
@@ -302,10 +260,7 @@ def send_telegram(
         "disable_web_page_preview": True,
     }
 
-    for attempt in range(
-        1,
-        4
-    ):
+    for attempt in range(1, 4):
 
         try:
 
@@ -349,23 +304,22 @@ def startup_message():
         "━━━━━━━━━━━━━━━━━━━━\n\n"
 
         "🏏 SRL CRICKET ONLY\n"
-        "📡 Sportradar SRL Sportcentre\n"
-        "🌐 Selenium + Chrome WebDriver\n\n"
+        "📡 Sportradar SRL Sportcentre\n\n"
 
-        f"⚡ Scan interval: {SCAN_INTERVAL}s\n"
-        f"🔄 Page refresh: {PAGE_REFRESH_INTERVAL}s\n\n"
+        "⚡ Selenium + Chrome WebDriver\n"
+        f"🔄 Page check: {CHECK_INTERVAL}s\n"
+        f"🌐 Refresh: {PAGE_REFRESH_INTERVAL}s\n\n"
 
         "📡 Telegram: ACTIVE\n"
         "🛡 Duplicate protection: ACTIVE\n"
-        "🎯 SRL filter: ACTIVE\n"
-        "🕐 Timezone: IST\n\n"
+        "🎯 Toss-text detection: ACTIVE\n\n"
 
-        "Waiting for live SRL toss..."
+        "Waiting for new SRL toss..."
     )
 
 
 # ============================================================
-# CHROME DRIVER
+# CHROME
 # ============================================================
 
 def create_driver():
@@ -376,10 +330,7 @@ def create_driver():
 
     options = Options()
 
-    # --------------------------------------------------------
-    # Railway / Docker
-    # --------------------------------------------------------
-
+    # Railway/headless mode.
     options.add_argument(
         "--headless=new"
     )
@@ -397,11 +348,7 @@ def create_driver():
     )
 
     options.add_argument(
-        "--window-size=1440,2000"
-    )
-
-    options.add_argument(
-        "--disable-blink-features=AutomationControlled"
+        "--window-size=1440,2200"
     )
 
     options.add_argument(
@@ -413,268 +360,190 @@ def create_driver():
     )
 
     options.add_argument(
-        "--lang=en-US"
+        "--disable-blink-features=AutomationControlled"
     )
 
     options.add_argument(
-        "--user-agent="
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 "
-        "(KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "--lang=en-US"
     )
 
-    # --------------------------------------------------------
-    # Try Railway's standard Chromium paths.
-    # --------------------------------------------------------
-
-    chrome_binary_candidates = [
+    # Railway Debian Chromium location.
+    chrome_binary = os.getenv(
+        "CHROME_BINARY",
         "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ]
+    )
 
-    for binary in chrome_binary_candidates:
-
-        if Path(binary).exists():
-
-            options.binary_location = binary
-
-            log.info(
-                "Using Chrome binary: %s",
-                binary,
-            )
-
-            break
-
-
-    driver_candidates = [
+    chrome_driver = os.getenv(
+        "CHROMEDRIVER_PATH",
         "/usr/bin/chromedriver",
-        "/usr/bin/chromium-driver",
-    ]
+    )
 
-    driver_path = None
+    options.binary_location = chrome_binary
 
-    for candidate in driver_candidates:
+    log.info(
+        "Using Chrome binary: %s",
+        chrome_binary,
+    )
 
-        if Path(candidate).exists():
+    log.info(
+        "Using ChromeDriver: %s",
+        chrome_driver,
+    )
 
-            driver_path = candidate
+    service = webdriver.ChromeService(
+        executable_path=chrome_driver
+    )
 
-            log.info(
-                "Using ChromeDriver: %s",
-                candidate,
-            )
-
-            break
-
-
-    if driver_path:
-
-        service = Service(
-            executable_path=driver_path
-        )
-
-        driver = webdriver.Chrome(
-            service=service,
-            options=options,
-        )
-
-    else:
-
-        log.info(
-            "ChromeDriver path not found. "
-            "Allowing Selenium Manager to locate it."
-        )
-
-        driver = webdriver.Chrome(
-            options=options
-        )
-
+    driver = webdriver.Chrome(
+        service=service,
+        options=options,
+    )
 
     driver.set_page_load_timeout(
-        PAGE_LOAD_TIMEOUT
+        30
+    )
+
+    driver.implicitly_wait(
+        2
     )
 
     return driver
 
 
 # ============================================================
-# OPEN SRL PAGE
+# GET PAGE TEXT
 # ============================================================
 
-def open_srl_page(
-    driver
-):
-
-    log.info(
-        "Opening SRL Cricket page..."
-    )
+def get_page_text(driver):
 
     try:
 
-        driver.get(
-            SRL_URL
+        body = driver.find_element(
+            By.TAG_NAME,
+            "body",
         )
+
+        text = body.text
+
+        return text.strip()
 
     except Exception as exc:
 
         log.warning(
-            "Initial page load exception: %s",
-            exc,
-        )
-
-    time.sleep(
-        PAGE_LOAD_WAIT
-    )
-
-    log.info(
-        "Browser URL: %s",
-        driver.current_url,
-    )
-
-    log.info(
-        "Browser title: %s",
-        driver.title,
-    )
-
-    return inspect_page(
-        driver,
-        initial=True,
-    )
-
-
-# ============================================================
-# PAGE INSPECTION
-# ============================================================
-
-def inspect_page(
-    driver,
-    initial=False,
-):
-
-    try:
-
-        body_text = clean_text(
-            driver.find_element(
-                "tag name",
-                "body",
-            ).text
-        )
-
-    except Exception as exc:
-
-        log.error(
-            "Could not read page body: %s",
+            "Could not read page text: %s",
             exc,
         )
 
         return ""
 
-    if initial:
-
-        log.info(
-            "Rendered page text length: %s",
-            len(body_text),
-        )
-
-        preview = body_text[
-            :1000
-        ]
-
-        if preview:
-
-            log.info(
-                "PAGE PREVIEW: %s",
-                preview,
-            )
-
-    return body_text
-
 
 # ============================================================
-# SRL PAGE VALIDATION
+# NORMALIZE TEXT
 # ============================================================
 
-def page_is_srl(
-    body_text
-):
+def normalize_text(value):
 
-    if not body_text:
+    if not value:
+        return ""
 
-        return False
-
-    lower = body_text.lower()
-
-    # --------------------------------------------------------
-    # Strong SRL indicators visible on the actual page.
-    # --------------------------------------------------------
-
-    indicators = [
-        "simulated reality league",
-        "indian premier league srl",
-        "t20 international srl",
-        "sa20 srl",
-        "pakistan super league srl",
-        "super smash srl",
-    ]
-
-    return any(
-        indicator in lower
-        for indicator in indicators
+    value = value.replace(
+        "\xa0",
+        " ",
     )
 
-
-# ============================================================
-# FIND TOSS SENTENCES
-# ============================================================
-
-def find_toss_sentences(
-    body_text
-):
-
-    if not body_text:
-
-        return []
-
-    results = []
-
-    # --------------------------------------------------------
-    # Primary live SRL wording.
-    #
-    # Example:
-    #
-    # South Africa SRL won the toss and elected to bat
-    #
-    # --------------------------------------------------------
-
-    pattern = re.compile(
-        r"([A-Za-z0-9 .&'’\-]+?)"
-        r"\s+won the toss and elected to\s+"
-        r"(bat|bowl|field)\b",
-        re.IGNORECASE,
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
     )
 
-    for match in pattern.finditer(
-        body_text
+    return value.strip()
+
+
+# ============================================================
+# SRL TEAM REGEX
+# ============================================================
+
+SRL_TEAM_PATTERN = (
+    r"([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?"
+    r"\sSRL)"
+)
+
+
+# ============================================================
+# EXTRACT ALL SRL TEAMS
+# ============================================================
+
+def extract_srl_teams(text):
+
+    teams = []
+
+    for match in re.finditer(
+        SRL_TEAM_PATTERN,
+        text,
+        flags=re.IGNORECASE,
     ):
 
-        winner = clean_text(
+        team = normalize_text(
             match.group(1)
         )
 
-        decision = clean_text(
+        if team and team not in teams:
+
+            teams.append(team)
+
+    return teams
+
+
+# ============================================================
+# EXACT TOSS SENTENCE DETECTION
+# ============================================================
+
+def find_toss_sentences(page_text):
+
+    results = []
+
+    normalized = normalize_text(
+        page_text
+    )
+
+    # --------------------------------------------------------
+    # Primary detection.
+    #
+    # This matches the exact style shown on your website:
+    #
+    # South Africa SRL won the toss and elected to bat
+    # --------------------------------------------------------
+
+    pattern = re.compile(
+        r"("
+        r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 .&'_-]*?"
+        r"\sSRL"
+        r")"
+        r"\s+won\s+the\s+toss"
+        r"(?:\s+and\s+elected\s+to\s+"
+        r"(bat|bowl|field))?",
+        flags=re.IGNORECASE,
+    )
+
+    for match in pattern.finditer(
+        normalized
+    ):
+
+        winner = normalize_text(
+            match.group(1)
+        )
+
+        decision = (
             match.group(2)
+            or ""
         ).lower()
 
         results.append(
             {
                 "winner": winner,
                 "decision": decision,
-                "raw": clean_text(
-                    match.group(0)
-                ),
+                "raw": match.group(0),
             }
         )
 
@@ -682,217 +551,234 @@ def find_toss_sentences(
 
 
 # ============================================================
-# SRL TEAM CHECK
+# COMPLETED MATCH TOSS BACKUP
 # ============================================================
 
-def is_srl_team(
-    team_name
-):
+TOSS_CODE_MAP = {
+    "SA": "South Africa SRL",
+    "IND": "India SRL",
+    "WI": "West Indies SRL",
+    "AFG": "Afghanistan SRL",
+    "ENG": "England SRL",
+    "PAK": "Pakistan SRL",
+    "AUS": "Australia SRL",
+    "NZ": "New Zealand SRL",
 
-    value = clean_text(
-        team_name
-    ).lower()
+    "RR": "Rajasthan Royals SRL",
+    "LSG": "Lucknow Super Giants SRL",
+    "CSK": "Chennai Super Kings SRL",
+    "MI": "Mumbai Indians SRL",
+    "DC": "Delhi Capitals SRL",
+    "SRH": "Sunrisers Hyderabad SRL",
+    "GT": "Gujarat Titans SRL",
+    "RCB": "Royal Challengers Bangalore SRL",
 
-    return (
-        value.endswith(" srl")
-        or " srl " in f" {value} "
+    "PC": "Pretoria Capitals SRL",
+    "MCT": "Mi Cape Town SRL",
+    "JSK": "Joburg Super Kings SRL",
+    "PR": "Paarl Royals SRL",
+    "DSG": "Durban Super Giants SRL",
+    "SEC": "Sunrisers Eastern Cape SRL",
+
+    "IU": "Islamabad United SRL",
+    "PZ": "Peshawar Zalmi SRL",
+    "KK": "Karachi Kings SRL",
+    "MS": "Multan Sultans SRL",
+    "LQ": "Lahore Qalandars SRL",
+    "QG": "Quetta Gladiators SRL",
+    "HK": "Hyderabad Kingsmen SRL",
+
+    "OT": "Otago SRL",
+    "AKL": "Auckland SRL",
+    "CD": "Central Districts SRL",
+    "CAN": "Canterbury SRL",
+    "ND": "Northern Districts SRL",
+    "WEL": "Wellington SRL",
+}
+
+
+# ============================================================
+# FIND TOSS CODE BACKUP
+# ============================================================
+
+def find_toss_codes(page_text):
+
+    results = []
+
+    normalized = normalize_text(
+        page_text
     )
 
-
-# ============================================================
-# VALIDATE TOSS
-# ============================================================
-
-def validate_toss(
-    toss
-):
-
-    winner = clean_text(
-        toss.get("winner")
+    pattern = re.compile(
+        r"\(Toss\s*:\s*([A-Za-z0-9_-]+)\)",
+        flags=re.IGNORECASE,
     )
 
-    decision = clean_text(
-        toss.get("decision")
-    ).lower()
-
-    if not winner:
-
-        return False
-
-    if not is_srl_team(
-        winner
+    for match in pattern.finditer(
+        normalized
     ):
 
-        log.warning(
-            "Rejected non-SRL toss winner: %s",
-            winner,
+        code = (
+            match.group(1)
+            .strip()
+            .upper()
         )
 
-        return False
+        winner = TOSS_CODE_MAP.get(
+            code
+        )
 
-    if decision not in {
-        "bat",
-        "bowl",
-        "field",
-    }:
+        if not winner:
 
-        return False
+            continue
 
-    return True
+        results.append(
+            {
+                "winner": winner,
+                "decision": "",
+                "raw": match.group(0),
+            }
+        )
+
+    return results
 
 
 # ============================================================
-# FIND MATCH CONTEXT
+# FIND FIXTURE AROUND TOSS
 # ============================================================
 
-def find_match_context(
-    body_text,
+def find_fixture(
+    page_text,
     winner,
 ):
 
-    lines = [
-        clean_text(line)
-        for line in body_text.splitlines()
-        if clean_text(line)
+    normalized = normalize_text(
+        page_text
+    )
+
+    # --------------------------------------------------------
+    # First try to locate the winner and nearby text.
+    # --------------------------------------------------------
+
+    winner_index = normalized.lower().find(
+        winner.lower()
+    )
+
+    if winner_index < 0:
+
+        return "SRL Match", "SRL Cricket"
+
+    # --------------------------------------------------------
+    # Search nearby area.
+    # --------------------------------------------------------
+
+    start = max(
+        0,
+        winner_index - 500,
+    )
+
+    end = min(
+        len(normalized),
+        winner_index + 700,
+    )
+
+    nearby = normalized[
+        start:end
     ]
 
-    winner_lower = winner.lower()
-
-    winner_index = -1
-
-    for index, line in enumerate(lines):
-
-        if (
-            winner_lower in line.lower()
-            and
-            "won the toss" in line.lower()
-        ):
-
-            winner_index = index
-
-            break
-
-    if winner_index < 0:
-
-        # Fallback search.
-        for index, line in enumerate(lines):
-
-            if winner_lower in line.lower():
-
-                winner_index = index
-
-                break
-
-    if winner_index < 0:
-
-        return {
-            "teams": [],
-            "tournament": "",
-        }
-
-
     # --------------------------------------------------------
-    # Search nearby lines for SRL teams.
+    # Extract SRL team names.
     # --------------------------------------------------------
 
-    nearby = lines[
-        max(
-            0,
-            winner_index - 8
-        ):
-        min(
-            len(lines),
-            winner_index + 8
+    teams = extract_srl_teams(
+        nearby
+    )
+
+    # Remove duplicates.
+    unique_teams = []
+
+    for team in teams:
+
+        if team not in unique_teams:
+
+            unique_teams.append(team)
+
+    # Winner first.
+    if winner in unique_teams:
+
+        unique_teams.remove(
+            winner
         )
-    ]
 
-    teams = []
-
-    for line in nearby:
-
-        if is_srl_team(line):
-
-            # Avoid obvious status lines.
-            if (
-                "won the toss" not in line.lower()
-                and "elected to" not in line.lower()
-            ):
-
-                if line not in teams:
-
-                    teams.append(
-                        line
-                    )
-
-    # Winner may only occur in toss sentence.
-    if winner not in teams:
-
-        teams.insert(
+        unique_teams.insert(
             0,
             winner
         )
 
-    # Keep only plausible team names.
-    teams = [
-        team
-        for team in teams
-        if len(team) <= 80
-    ]
+    if len(unique_teams) >= 2:
+
+        fixture = (
+            f"{unique_teams[0]} vs "
+            f"{unique_teams[1]}"
+        )
+
+    else:
+
+        fixture = "SRL Match"
 
     # --------------------------------------------------------
-    # Tournament detection.
+    # Determine league.
     # --------------------------------------------------------
 
-    tournament = ""
+    league = "SRL Cricket"
 
-    tournament_names = [
-        "Indian Premier League SRL",
-        "T20 International SRL",
-        "SA20 SRL",
-        "Pakistan Super League SRL",
-        "Super Smash SRL",
-        "Caribbean Premier League SRL",
-        "Big Bash League SRL",
-    ]
+    lower = nearby.lower()
 
-    # Search entire page because section header may be
-    # several lines above the match.
-    body_lower = body_text.lower()
+    if "indian premier league srl" in lower:
 
-    for name in tournament_names:
+        league = "Indian Premier League SRL"
 
-        if name.lower() in body_lower:
+    elif "t20 international srl" in lower:
 
-            # Prefer tournament near the match.
-            tournament = name
+        league = "T20 International SRL"
 
-            break
+    elif "sa20 srl" in lower:
 
-    return {
-        "teams": teams[:2],
-        "tournament": tournament,
-    }
+        league = "SA20 SRL"
+
+    elif "pakistan super league srl" in lower:
+
+        league = "Pakistan Super League SRL"
+
+    elif "super smash srl" in lower:
+
+        league = "Super Smash SRL"
+
+    elif "caribbean premier league srl" in lower:
+
+        league = "Caribbean Premier League SRL"
+
+    return fixture, league
 
 
 # ============================================================
-# TOSS IDENTIFIER
+# UTC → IST
 # ============================================================
 
-def make_toss_id(
-    toss
-):
+def ist_now():
 
-    raw = (
-        f"{toss.get('winner','')}|"
-        f"{toss.get('decision','')}|"
-        f"{toss.get('fixture','')}"
+    ist = timezone(
+        timedelta(
+            hours=5,
+            minutes=30,
+        )
     )
 
-    return hashlib.sha256(
-        raw.encode(
-            "utf-8"
-        )
-    ).hexdigest()[:32]
+    return datetime.now(
+        timezone.utc
+    ).astimezone(
+        ist
+    )
 
 
 # ============================================================
@@ -903,75 +789,60 @@ def format_decision(
     decision
 ):
 
-    value = clean_text(
+    decision = normalize_text(
         decision
     ).lower()
 
-    if value == "bat":
+    if decision == "bat":
 
         return "Elected to bat"
 
-    if value in {
-        "bowl",
-        "field",
-    }:
+    if decision == "bowl":
 
         return "Elected to bowl"
 
-    return value or "Not reported"
+    if decision == "field":
+
+        return "Elected to field"
+
+    return "Not reported"
 
 
 # ============================================================
-# BUILD TOSS ALERT
+# TOSS ID
+# ============================================================
+
+def make_toss_id(
+    winner,
+    fixture,
+    decision,
+):
+
+    raw = (
+        f"{winner}|"
+        f"{fixture}|"
+        f"{decision}"
+    ).lower()
+
+    return hashlib.sha256(
+        raw.encode(
+            "utf-8"
+        )
+    ).hexdigest()[:32]
+
+
+# ============================================================
+# BUILD ALERT
 # ============================================================
 
 def build_toss_message(
-    toss
+    winner,
+    fixture,
+    league,
+    decision,
 ):
 
-    # --------------------------------------------------------
-    # ALWAYS INDIA STANDARD TIME
-    # --------------------------------------------------------
-
-    now_ist = datetime.now(
-        timezone.utc
-    ).astimezone(
-        ZoneInfo(
-            "Asia/Kolkata"
-        )
-    )
-
-    winner = toss[
-        "winner"
-    ]
-
-    decision = format_decision(
-        toss[
-            "decision"
-        ]
-    )
-
-    fixture = toss.get(
-        "fixture",
-        "",
-    )
-
-    tournament = toss.get(
-        "tournament",
-        "",
-    )
-
-    if not fixture:
-
-        fixture = (
-            f"{winner} vs SRL"
-        )
-
-    if not tournament:
-
-        tournament = (
-            "SRL Cricket"
-        )
+    now = ist_now()
 
     return (
         "🏏 SRL TOSS ALERT\n"
@@ -980,10 +851,12 @@ def build_toss_message(
         f"🏆 {winner} WON THE TOSS\n\n"
 
         f"⚔️ {fixture}\n"
-        f"🏆 {tournament}\n\n"
+        f"🏆 {league}\n\n"
 
-        f"🎯 Decision: {decision}\n"
-        f"⏰ {now_ist.strftime('%d %b %Y | %H:%M:%S IST')}\n\n"
+        f"🎯 Decision: "
+        f"{format_decision(decision)}\n"
+
+        f"⏰ {now.strftime('%d %b %Y | %H:%M:%S IST')}\n\n"
 
         "📡 Sportradar SRL Sportcentre\n"
         "🔔 LIVE TOSS MONITOR"
@@ -991,21 +864,32 @@ def build_toss_message(
 
 
 # ============================================================
-# PROCESS TOSS
+# PROCESS ONE TOSS
 # ============================================================
 
 def process_toss(
-    toss
+    toss,
+    page_text,
 ):
 
-    if not validate_toss(
-        toss
-    ):
+    winner = toss[
+        "winner"
+    ]
 
-        return False
+    decision = toss.get(
+        "decision",
+        "",
+    )
+
+    fixture, league = find_fixture(
+        page_text,
+        winner,
+    )
 
     identifier = make_toss_id(
-        toss
+        winner,
+        fixture,
+        decision,
     )
 
     if identifier in seen_tosses:
@@ -1013,17 +897,18 @@ def process_toss(
         return False
 
     log.info(
-        "NEW SRL TOSS | winner=%s | decision=%s",
-        toss["winner"],
-        toss["decision"],
+        "NEW SRL TOSS | winner=%s | "
+        "fixture=%s | decision=%s",
+        winner,
+        fixture,
+        decision,
     )
 
     message = build_toss_message(
-        toss
-    )
-
-    log.info(
-        "Sending Telegram SRL toss alert..."
+        winner,
+        fixture,
+        league,
+        decision,
     )
 
     if not send_telegram(
@@ -1031,7 +916,8 @@ def process_toss(
     ):
 
         log.error(
-            "Telegram failed. Toss will be retried."
+            "Telegram failed. "
+            "Toss will be retried."
         )
 
         return False
@@ -1050,93 +936,231 @@ def process_toss(
 
 
 # ============================================================
-# EXTRACT AND PROCESS PAGE TOSSES
+# INITIAL PAGE BASELINE
 # ============================================================
 
-def scan_for_tosses(
-    body_text
+def initialize_existing_tosses(
+    page_text
 ):
 
-    if not page_is_srl(
-        body_text
-    ):
+    existing = []
 
-        log.warning(
-            "Page does not currently look like SRL Cricket."
+    existing.extend(
+        find_toss_sentences(
+            page_text
         )
-
-        return 0
-
-    tosses = find_toss_sentences(
-        body_text
     )
 
-    if not tosses:
+    # --------------------------------------------------------
+    # Important:
+    #
+    # We DO NOT alert for tosses already visible when the
+    # bot first starts.
+    #
+    # Otherwise restarting the bot on a page containing
+    # yesterday/today completed matches would generate
+    # old alerts.
+    # --------------------------------------------------------
 
-        return 0
-
-    detected = 0
-
-    for toss in tosses:
+    for toss in existing:
 
         winner = toss[
             "winner"
         ]
 
-        context = find_match_context(
-            body_text,
+        fixture, _ = find_fixture(
+            page_text,
             winner,
         )
 
-        teams = context.get(
-            "teams",
-            []
+        identifier = make_toss_id(
+            winner,
+            fixture,
+            toss.get(
+                "decision",
+                "",
+            ),
         )
 
-        tournament = context.get(
-            "tournament",
-            ""
+        seen_tosses.add(
+            identifier
         )
 
-        # ----------------------------------------------------
-        # Build fixture.
-        # ----------------------------------------------------
+    if existing:
 
-        if len(teams) >= 2:
-
-            fixture = (
-                f"{teams[0]} vs {teams[1]}"
-            )
-
-        else:
-
-            fixture = ""
-
-        enriched = {
-            "winner": winner,
-            "decision": toss[
-                "decision"
-            ],
-            "fixture": fixture,
-            "tournament": tournament,
-        }
+        save_state()
 
         log.info(
-            "TOSS DETECTED | %s | %s | %s",
-            winner,
-            format_decision(
-                toss["decision"]
-            ),
-            fixture or "fixture unknown",
+            "Initial baseline: %s existing "
+            "toss statements registered.",
+            len(existing),
         )
 
-        if process_toss(
-            enriched
-        ):
+    else:
 
-            detected += 1
+        log.info(
+            "Initial baseline: no existing "
+            "live toss statements."
+        )
 
-    return detected
+
+# ============================================================
+# MONITOR PAGE
+# ============================================================
+
+def monitor_page(
+    driver
+):
+
+    last_refresh = time.monotonic()
+
+    first_scan = True
+
+    last_page_text = ""
+
+    while True:
+
+        try:
+
+            now = time.monotonic()
+
+            # ------------------------------------------------
+            # Periodic page refresh.
+            # ------------------------------------------------
+
+            if (
+                now - last_refresh
+                >= PAGE_REFRESH_INTERVAL
+            ):
+
+                log.info(
+                    "Refreshing SRL Cricket page..."
+                )
+
+                driver.refresh()
+
+                time.sleep(3)
+
+                last_refresh = time.monotonic()
+
+                first_scan = False
+
+            # ------------------------------------------------
+            # Read rendered DOM.
+            # ------------------------------------------------
+
+            page_text = get_page_text(
+                driver
+            )
+
+            if not page_text:
+
+                time.sleep(
+                    CHECK_INTERVAL
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Log only when page content changes.
+            # ------------------------------------------------
+
+            if page_text != last_page_text:
+
+                log.info(
+                    "Rendered page text length: %s",
+                    len(page_text),
+                )
+
+                preview = normalize_text(
+                    page_text
+                )[:1500]
+
+                log.info(
+                    "PAGE PREVIEW: %s",
+                    preview,
+                )
+
+                last_page_text = page_text
+
+            # ------------------------------------------------
+            # First scan.
+            # ------------------------------------------------
+
+            if first_scan:
+
+                initialize_existing_tosses(
+                    page_text
+                )
+
+                first_scan = False
+
+            # ------------------------------------------------
+            # PRIMARY:
+            #
+            # "South Africa SRL won the toss
+            #  and elected to bat"
+            # ------------------------------------------------
+
+            tosses = find_toss_sentences(
+                page_text
+            )
+
+            for toss in tosses:
+
+                process_toss(
+                    toss,
+                    page_text,
+                )
+
+            # ------------------------------------------------
+            # BACKUP:
+            #
+            # "(Toss:SA)"
+            #
+            # Only used when exact toss sentence is no longer
+            # visible.
+            # ------------------------------------------------
+
+            if not tosses:
+
+                backup_tosses = (
+                    find_toss_codes(
+                        page_text
+                    )
+                )
+
+                for toss in backup_tosses:
+
+                    process_toss(
+                        toss,
+                        page_text,
+                    )
+
+            heartbeat(
+                "ACTIVE"
+            )
+
+            time.sleep(
+                CHECK_INTERVAL
+            )
+
+        except KeyboardInterrupt:
+
+            raise
+
+        except Exception as exc:
+
+            log.exception(
+                "Monitor loop error: %s",
+                exc,
+            )
+
+            heartbeat(
+                "ERROR - RECOVERING"
+            )
+
+            time.sleep(3)
 
 
 # ============================================================
@@ -1151,18 +1175,13 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Validate Telegram.
+    # Credentials
     # --------------------------------------------------------
 
     if not telegram_configured():
 
         log.error(
             "Telegram configuration missing."
-        )
-
-        log.error(
-            "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID "
-            "in Railway Variables."
         )
 
         return
@@ -1172,13 +1191,13 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Load duplicate state.
+    # State
     # --------------------------------------------------------
 
     load_state()
 
     # --------------------------------------------------------
-    # Start Chrome.
+    # Chrome
     # --------------------------------------------------------
 
     driver = None
@@ -1188,11 +1207,47 @@ def main():
         driver = create_driver()
 
         # ----------------------------------------------------
-        # Open SRL page.
+        # Open SRL Cricket page.
         # ----------------------------------------------------
 
-        open_srl_page(
+        log.info(
+            "Opening SRL Cricket page..."
+        )
+
+        driver.get(
+            SRL_URL
+        )
+
+        time.sleep(5)
+
+        log.info(
+            "Browser URL: %s",
+            driver.current_url,
+        )
+
+        log.info(
+            "Browser title: %s",
+            driver.title,
+        )
+
+        # ----------------------------------------------------
+        # Initial rendered page.
+        # ----------------------------------------------------
+
+        page_text = get_page_text(
             driver
+        )
+
+        log.info(
+            "Rendered page text length: %s",
+            len(page_text),
+        )
+
+        log.info(
+            "PAGE PREVIEW: %s",
+            normalize_text(
+                page_text
+            )[:1500],
         )
 
         # ----------------------------------------------------
@@ -1217,130 +1272,19 @@ def main():
         # Monitor.
         # ----------------------------------------------------
 
-        last_refresh = time.monotonic()
+        monitor_page(
+            driver
+        )
 
-        startup_scan = True
+    except KeyboardInterrupt:
 
-        while True:
+        log.info(
+            "Stopped by user."
+        )
 
-            try:
-
-                now = time.monotonic()
-
-                # ------------------------------------------------
-                # Refresh page periodically.
-                # ------------------------------------------------
-
-                if (
-                    now - last_refresh
-                    >= PAGE_REFRESH_INTERVAL
-                ):
-
-                    log.info(
-                        "Refreshing SRL Cricket page..."
-                    )
-
-                    try:
-
-                        driver.refresh()
-
-                    except Exception as exc:
-
-                        log.warning(
-                            "Page refresh failed: %s",
-                            exc,
-                        )
-
-                    time.sleep(
-                        PAGE_LOAD_WAIT
-                    )
-
-                    last_refresh = now
-
-                # ------------------------------------------------
-                # Read rendered page.
-                # ------------------------------------------------
-
-                body_text = inspect_page(
-                    driver,
-                    initial=startup_scan,
-                )
-
-                startup_scan = False
-
-                # ------------------------------------------------
-                # Access Denied detection.
-                # ------------------------------------------------
-
-                if (
-                    "access denied" in body_text.lower()
-                    or
-                    "you don't have permission" in body_text.lower()
-                ):
-
-                    log.error(
-                        "SRL SPORTCENTRE ACCESS DENIED."
-                    )
-
-                    heartbeat(
-                        "ACCESS DENIED"
-                    )
-
-                    time.sleep(
-                        SCAN_INTERVAL
-                    )
-
-                    continue
-
-                # ------------------------------------------------
-                # Scan toss.
-                # ------------------------------------------------
-
-                found = scan_for_tosses(
-                    body_text
-                )
-
-                if found:
-
-                    log.info(
-                        "New SRL toss alerts sent: %s",
-                        found,
-                    )
-
-                heartbeat(
-                    "ACTIVE"
-                )
-
-                time.sleep(
-                    SCAN_INTERVAL
-                )
-
-            except KeyboardInterrupt:
-
-                log.info(
-                    "Stopped by user."
-                )
-
-                heartbeat(
-                    "STOPPED"
-                )
-
-                break
-
-            except Exception as exc:
-
-                log.exception(
-                    "Monitor loop error: %s",
-                    exc,
-                )
-
-                heartbeat(
-                    "ERROR - RECOVERING"
-                )
-
-                time.sleep(
-                    5
-                )
+        heartbeat(
+            "STOPPED"
+        )
 
     except Exception as exc:
 
@@ -1355,7 +1299,7 @@ def main():
 
     finally:
 
-        if driver:
+        if driver is not None:
 
             try:
 
@@ -1364,10 +1308,6 @@ def main():
             except Exception:
 
                 pass
-
-        log.info(
-            "SRL monitor stopped."
-        )
 
 
 # ============================================================
