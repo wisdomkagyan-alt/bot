@@ -2,7 +2,6 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System packages required by Chromium / Playwright
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -27,20 +26,17 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxfixes3 \
     libxkbcommon0 \
+    libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium + all required browser dependencies
 RUN playwright install --with-deps chromium
 
-# Copy application
 COPY main.py .
 
-# Railway starts this
 CMD ["python", "-u", "main.py"]
