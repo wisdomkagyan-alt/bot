@@ -621,35 +621,78 @@ def extract_event_metadata(
 # SRL MATCH FILTER
 # ============================================================
 
-def is_srl_event(
-    event,
-):
+# ============================================================
+# SRL MATCH FILTER — SRL CRICKET ONLY
+# ============================================================
 
-    if not SRL_ONLY:
+SRL_KEYWORDS = [
+    "simulated reality",
+    "simulated reality league",
+    "srl cricket",
+    "srl",
+]
 
-        return True
 
-    metadata = extract_event_metadata(
-        event
+def is_srl_event(event):
+
+    if not isinstance(event, dict):
+        return False
+
+    metadata = extract_event_metadata(event)
+
+    teams = extract_team_names(event)
+
+    tournament = metadata.get(
+        "tournament_name",
+        "",
+    )
+
+    category = metadata.get(
+        "category_name",
+        "",
+    )
+
+    season = metadata.get(
+        "season_name",
+        "",
     )
 
     combined = " ".join(
         [
-            metadata["tournament_name"],
-            metadata["category_name"],
-            metadata["season_name"],
+            tournament,
+            category,
+            season,
+            *teams,
         ]
     ).lower()
 
-    if any(
-        keyword in combined
-        for keyword in SRL_KEYWORDS
-    ):
+    # --------------------------------------------------------
+    # Explicit SRL / Simulated Reality identification
+    # --------------------------------------------------------
 
+    if "simulated reality" in combined:
+        return True
+
+    if "simulated reality league" in combined:
+        return True
+
+    if "srl cricket" in combined:
+        return True
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Do NOT treat a normal cricket competition such as
+    # IPL / CPL / T20 World Cup as SRL just because the
+    # competition itself is present.
+    #
+    # "srl" must actually appear in the returned metadata
+    # or team names.
+    # --------------------------------------------------------
+
+    if "srl" in combined:
         return True
 
     return False
-
 
 # ============================================================
 # EXTRACT EVENTS FROM SCHEDULE
@@ -766,43 +809,23 @@ def discover_live_matches():
             metadata["season_name"],
         )
 
-        # ----------------------------------------------------
-        # TEMPORARY:
-        # Do NOT filter SRL here.
-        #
-        # We need to see exactly what the API returns.
-        # ----------------------------------------------------
+# ----------------------------------------------------
+# SRL ONLY
+# ----------------------------------------------------
 
-        record = {
-            "id": event_id,
-            "scheduled": text(
-                event.get("scheduled")
-            ),
-            "teams": teams,
-            "tournament": metadata[
-                "tournament_name"
-            ],
-            "category": metadata[
-                "category_name"
-            ],
-            "season": metadata[
-                "season_name"
-            ],
-        }
-
-        known_matches[event_id] = record
-
-        matches.append(record)
-
-    if matches:
-        save_state()
+if not is_srl_event(event):
 
     log.info(
-        "ALL LIVE MATCHES STORED: %s",
-        len(matches),
+        "SKIP NON-SRL | id=%s | teams=%s | "
+        "tournament=%s | category=%s | season=%s",
+        event_id,
+        " vs ".join(teams),
+        metadata["tournament_name"],
+        metadata["category_name"],
+        metadata["season_name"],
     )
 
-    return matches
+    continue
 
 # ============================================================
 # MATCH SUMMARY
