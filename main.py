@@ -3,12 +3,23 @@
 #
 # SRL CRICKET ONLY
 #
-# Source:
+# SOURCE:
 # https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket
 #
 # Selenium + Chromium
 # Rendered DOM detection
 # Telegram alerts
+#
+# FEATURES
+#
+# 1. LIVE SRL TOSS DETECTION
+# 2. DUPLICATE TOSS PROTECTION
+# 3. IST TIME
+# 4. DAILY SRL FIXTURE BOARD
+#    - Sent once every new day
+#    - 00:01 IST or immediately after restart if missed
+#    - All today's fixtures
+#    - Grouped by league
 #
 # ============================================================
 
@@ -40,10 +51,30 @@ SRL_URL = (
     "pt/simulated-reality/cricket"
 )
 
+# How often DOM is checked.
 CHECK_INTERVAL = 2
+
+# Refresh page periodically.
 PAGE_REFRESH_INTERVAL = 30
+
 PAGE_LOAD_TIMEOUT = 30
+
 REQUEST_TIMEOUT = 15
+
+
+# ============================================================
+# DAILY FIXTURE BOARD
+# ============================================================
+
+# First daily board time = 00:01 IST.
+DAILY_FIXTURE_HOUR = 0
+DAILY_FIXTURE_MINUTE = 1
+
+FIXTURE_STATE_FILE = Path(
+    "daily_fixture_state.json"
+)
+
+last_fixture_board_date = ""
 
 
 # ============================================================
@@ -122,7 +153,7 @@ http.headers.update(
         "accept": "application/json",
         "user-agent": (
             "SRL-Toss-Selenium-Monitor/2026"
-        ),
+        )
     }
 )
 
@@ -131,12 +162,17 @@ http.headers.update(
 # TEXT CLEANER
 # ============================================================
 
-def clean_text(value):
+def clean_text(
+    value
+):
 
     if value is None:
+
         return ""
 
-    value = str(value)
+    value = str(
+        value
+    )
 
     value = value.replace(
         "\xa0",
@@ -162,6 +198,7 @@ def load_json(
 ):
 
     if not path.exists():
+
         return default
 
     try:
@@ -213,7 +250,7 @@ def save_json(
 
 
 # ============================================================
-# LOAD STATE
+# LOAD TOSS STATE
 # ============================================================
 
 def load_state():
@@ -250,14 +287,66 @@ def load_state():
 
 
 # ============================================================
-# SAVE STATE
+# SAVE TOSS STATE
 # ============================================================
 
 def save_state():
 
     save_json(
         STATE_FILE,
-        sorted(seen_tosses)
+        sorted(
+            seen_tosses
+        )
+    )
+
+
+# ============================================================
+# LOAD DAILY FIXTURE STATE
+# ============================================================
+
+def load_fixture_state():
+
+    global last_fixture_board_date
+
+    data = load_json(
+        FIXTURE_STATE_FILE,
+        {}
+    )
+
+    if isinstance(
+        data,
+        dict
+    ):
+
+        last_fixture_board_date = str(
+            data.get(
+                "last_sent_date",
+                ""
+            )
+        )
+
+        log.info(
+            "Last fixture board date: %s",
+            last_fixture_board_date or "NONE"
+        )
+
+    else:
+
+        last_fixture_board_date = ""
+
+
+# ============================================================
+# SAVE DAILY FIXTURE STATE
+# ============================================================
+
+def save_fixture_state():
+
+    save_json(
+        FIXTURE_STATE_FILE,
+        {
+            "last_sent_date":
+                last_fixture_board_date
+        }
     )
 
 
@@ -380,6 +469,7 @@ def startup_message():
         "📡 Telegram: ACTIVE\n"
         "🛡 Duplicate protection: ACTIVE\n"
         "🎯 Toss detector: ACTIVE\n"
+        "📋 Daily fixture board: ACTIVE\n"
         "🇮🇳 Time: IST\n\n"
 
         "Waiting for SRL toss..."
@@ -552,7 +642,7 @@ def open_page(
 
 
 # ============================================================
-# PAGE TEXT
+# GET PAGE TEXT
 # ============================================================
 
 def get_page_text(
@@ -594,6 +684,7 @@ def log_page_preview(
     )
 
     if not value:
+
         return
 
     log.info(
@@ -608,7 +699,7 @@ def log_page_preview(
 
 
 # ============================================================
-# SRL TEAM
+# SRL TEAM VALIDATION
 # ============================================================
 
 def is_srl_team(
@@ -625,6 +716,46 @@ def is_srl_team(
 
 
 # ============================================================
+# LEAGUE HEADER DETECTION
+# ============================================================
+
+def is_league_header(
+    name
+):
+
+    value = clean_text(
+        name
+    ).lower()
+
+    if not value:
+
+        return False
+
+    # Known SRL competition header patterns.
+
+    if value in {
+        "sa20 srl",
+        "super smash srl"
+    }:
+
+        return True
+
+    if value.endswith(
+        " league srl"
+    ):
+
+        return True
+
+    if value.endswith(
+        " international srl"
+    ):
+
+        return True
+
+    return False
+
+
+# ============================================================
 # CLEAN TEAM NAME
 # ============================================================
 
@@ -635,6 +766,8 @@ def clean_team_name(
     value = clean_text(
         value
     )
+
+    # Remove score/over prefixes.
 
     value = re.sub(
         r"^\d+(?:\.\d+)?\s*(?:OV|OVERS?)\s+",
@@ -655,12 +788,7 @@ def clean_team_name(
 
 
 # ============================================================
-# EXTRACT SRL TEAMS FROM DOM TEXT
-#
-# IMPORTANT:
-# This deliberately does NOT use re.IGNORECASE.
-# It prevents score fragments such as "0/0" from
-# becoming part of a team name.
+# EXTRACT SRL TEAMS
 # ============================================================
 
 def extract_srl_teams(
@@ -670,6 +798,10 @@ def extract_srl_teams(
     value = clean_text(
         value
     )
+
+    if not value:
+
+        return []
 
     pattern = re.compile(
         r"\b("
@@ -695,7 +827,22 @@ def extract_srl_teams(
 
             continue
 
-        if team not in found:
+        if is_league_header(
+            team
+        ):
+
+            continue
+
+        duplicate = False
+
+        for existing in found:
+
+            if existing.lower() == team.lower():
+
+                duplicate = True
+                break
+
+        if not duplicate:
 
             found.append(
                 team
@@ -705,21 +852,7 @@ def extract_srl_teams(
 
 
 # ============================================================
-# FIXTURE EXTRACTION
-#
-# Looks at the text immediately surrounding the toss.
-#
-# If the DOM row contains:
-#
-# Joburg Super Kings SRL
-# Durban Super Giants SRL
-# Joburg Super Kings SRL won the toss...
-#
-# the fixture becomes:
-#
-# Joburg Super Kings SRL
-# vs
-# Durban Super Giants SRL
+# EXTRACT FIXTURE FROM TOSS TEXT
 # ============================================================
 
 def extract_fixture(
@@ -742,10 +875,6 @@ def extract_fixture(
             ""
         )
 
-    # --------------------------------------------------------
-    # Only examine text before "won the toss".
-    # --------------------------------------------------------
-
     lower = value.lower()
 
     position = lower.find(
@@ -766,57 +895,22 @@ def extract_fixture(
         before_toss
     )
 
-    # --------------------------------------------------------
-    # If there are at least two teams,
-    # use the final two distinct teams.
-    # --------------------------------------------------------
-
     if len(teams) >= 2:
 
-        team2 = teams[-1]
-
-        remaining = [
-            x for x in teams[:-1]
-            if x.lower() != team2.lower()
-        ]
-
-        if remaining:
-
-            team1 = remaining[-1]
-
-            return (
-                team1,
-                team2
-            )
-
-    # --------------------------------------------------------
-    # Sometimes the winner appears immediately before
-    # "won the toss", while the opponent is in the same
-    # DOM row but after/before another element.
-    # Search whole candidate text.
-    # --------------------------------------------------------
+        return (
+            teams[-2],
+            teams[-1]
+        )
 
     teams = extract_srl_teams(
         value
     )
 
-    unique = []
-
-    for team in teams:
-
-        if team.lower() not in {
-            x.lower() for x in unique
-        }:
-
-            unique.append(
-                team
-            )
-
-    if len(unique) >= 2:
+    if len(teams) >= 2:
 
         return (
-            unique[-2],
-            unique[-1]
+            teams[-2],
+            teams[-1]
         )
 
     return (
@@ -826,7 +920,7 @@ def extract_fixture(
 
 
 # ============================================================
-# PARSE TOSS SENTENCE
+# PARSE TOSS
 # ============================================================
 
 def parse_toss(
@@ -897,9 +991,10 @@ def parse_toss(
 # ============================================================
 # FIND DOM TOSSES
 #
-# IMPROVED:
-# We inspect the toss element AND its ancestors.
-# This is the important fix for signals such as JSK.
+# We inspect the toss element AND ancestors.
+# This helps catch tosses such as:
+#
+# Joburg Super Kings SRL won the toss and elected to bat
 # ============================================================
 
 def find_dom_tosses(
@@ -937,10 +1032,6 @@ def find_dom_tosses(
 
         candidates = []
 
-        # ----------------------------------------------------
-        # Current element.
-        # ----------------------------------------------------
-
         try:
 
             current_text = clean_text(
@@ -959,12 +1050,6 @@ def find_dom_tosses(
 
             pass
 
-        # ----------------------------------------------------
-        # Walk ancestors.
-        #
-        # We stop after 10 levels.
-        # ----------------------------------------------------
-
         current = element
 
         for _ in range(10):
@@ -982,30 +1067,25 @@ def find_dom_tosses(
                     )
                 )
 
-                if parent_text:
+                if (
+                    parent_text
+                    and len(parent_text) <= 1200
+                ):
 
-                    # Don't keep enormous page-level elements.
-                    if len(parent_text) <= 1200:
-
-                        candidates.append(
-                            parent_text
-                        )
+                    candidates.append(
+                        parent_text
+                    )
 
             except Exception:
 
                 break
-
-        # ----------------------------------------------------
-        # Prefer the SMALLEST candidate that gives us
-        # a fixture.
-        # ----------------------------------------------------
 
         candidates = sorted(
             set(candidates),
             key=len
         )
 
-        selected_toss = None
+        selected = None
 
         for candidate in candidates:
 
@@ -1022,17 +1102,17 @@ def find_dom_tosses(
                 and toss["team2"]
             ):
 
-                selected_toss = toss
+                selected = toss
                 break
 
-            if selected_toss is None:
+            if selected is None:
 
-                selected_toss = toss
+                selected = toss
 
-        if selected_toss:
+        if selected:
 
             results.append(
-                selected_toss
+                selected
             )
 
     return deduplicate_tosses(
@@ -1041,9 +1121,7 @@ def find_dom_tosses(
 
 
 # ============================================================
-# PAGE TEXT FALLBACK
-#
-# Kept as a backup if DOM structure changes.
+# FALLBACK PAGE TEXT TOSS DETECTOR
 # ============================================================
 
 def find_text_tosses(
@@ -1103,7 +1181,7 @@ def find_text_tosses(
 
 
 # ============================================================
-# DEDUPLICATE SCAN RESULTS
+# DEDUPLICATE TOSS RESULTS
 # ============================================================
 
 def deduplicate_tosses(
@@ -1145,10 +1223,6 @@ def deduplicate_tosses(
         if not winner:
 
             continue
-
-        # ----------------------------------------------------
-        # Use fixture when available.
-        # ----------------------------------------------------
 
         if team1 and team2:
 
@@ -1199,7 +1273,7 @@ def current_ist():
 
 
 # ============================================================
-# FORMAT DECISION
+# FORMAT TOSS DECISION
 # ============================================================
 
 def format_decision(
@@ -1227,7 +1301,7 @@ def format_decision(
 # ============================================================
 # TOSS MESSAGE
 #
-# KEEPING YOUR CURRENT SIMPLE FORMAT
+# CURRENT SIMPLE FORMAT
 # ============================================================
 
 def build_toss_message(
@@ -1261,17 +1335,7 @@ def build_toss_message(
 # ============================================================
 # TOSS ID
 #
-# IMPORTANT FIX:
-#
-# Fixture is included when available.
-#
-# Therefore:
-#
-# JSK + BAT + Match A
-#
-# is different from:
-#
-# JSK + BAT + Match B
+# Fixture included whenever available.
 # ============================================================
 
 def make_toss_id(
@@ -1306,10 +1370,6 @@ def make_toss_id(
         )
     ).lower()
 
-    # --------------------------------------------------------
-    # BEST ID
-    # --------------------------------------------------------
-
     if team1 and team2:
 
         raw = (
@@ -1321,7 +1381,6 @@ def make_toss_id(
 
     else:
 
-        # Fallback only when page text gives no fixture.
         raw = (
             f"{winner}|"
             f"{decision}"
@@ -1361,47 +1420,27 @@ def process_toss(
 
     toss["winner"] = winner
 
-    team1 = clean_team_name(
+    toss["team1"] = clean_team_name(
         toss.get(
             "team1",
             ""
         )
     )
 
-    team2 = clean_team_name(
+    toss["team2"] = clean_team_name(
         toss.get(
             "team2",
             ""
         )
     )
 
-    toss["team1"] = team1
-    toss["team2"] = team2
-
     identifier = make_toss_id(
         toss
     )
 
-    # --------------------------------------------------------
-    # DUPLICATE
-    # --------------------------------------------------------
-
     if identifier in seen_tosses:
 
-        log.debug(
-            "Duplicate toss ignored | "
-            "%s | %s | %s vs %s",
-            winner,
-            toss.get("decision", ""),
-            team1,
-            team2
-        )
-
         return False
-
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
 
     log.info(
         "🔥 NEW SRL TOSS DETECTED | "
@@ -1412,21 +1451,13 @@ def process_toss(
             "decision",
             ""
         ),
-        team1 or "SRL",
-        team2 or "Match"
+        toss["team1"] or "SRL",
+        toss["team2"] or "Match"
     )
-
-    # --------------------------------------------------------
-    # MESSAGE
-    # --------------------------------------------------------
 
     message = build_toss_message(
         toss
     )
-
-    # --------------------------------------------------------
-    # SEND
-    # --------------------------------------------------------
 
     success = send_telegram(
         message
@@ -1441,10 +1472,6 @@ def process_toss(
 
         return False
 
-    # --------------------------------------------------------
-    # MARK ONLY AFTER SUCCESS
-    # --------------------------------------------------------
-
     seen_tosses.add(
         identifier
     )
@@ -1452,16 +1479,728 @@ def process_toss(
     save_state()
 
     log.info(
-        "✅ SRL TOSS ALERT SENT ONCE | "
-        "%s | %s",
-        winner,
-        toss.get(
-            "decision",
-            ""
-        )
+        "✅ SRL TOSS ALERT SENT ONCE | %s",
+        winner
     )
 
     return True
+
+
+# ============================================================
+# DAILY FIXTURE HELPERS
+# ============================================================
+
+def is_fixture_time(
+    value
+):
+
+    return bool(
+        re.search(
+            r"\b\d{1,2}\s+AGO\s*\|\s*\d{1,2}:\d{2}\b",
+            value,
+            re.IGNORECASE
+        )
+    )
+
+
+# ============================================================
+# EXTRACT DAILY FIXTURES FROM PAGE TEXT
+#
+# The SRL page can render rows in slightly different orders.
+#
+# Examples:
+#
+# Team A
+# Team B
+# 29 AGO | 14:30
+#
+# OR:
+#
+# Team A
+# 29 AGO | 14:30
+# Team B
+#
+# This parser supports both.
+# ============================================================
+
+def extract_daily_fixtures_from_text(
+    page_text
+):
+
+    lines = [
+        clean_text(x)
+        for x in str(
+            page_text
+        ).splitlines()
+        if clean_text(x)
+    ]
+
+    fixtures = []
+
+    current_league = "SRL"
+
+    for index, line in enumerate(
+        lines
+    ):
+
+        # ----------------------------------------------------
+        # Detect league headers.
+        # ----------------------------------------------------
+
+        if is_league_header(
+            line
+        ):
+
+            current_league = line
+            continue
+
+        # ----------------------------------------------------
+        # We only care about scheduled fixture time rows.
+        # ----------------------------------------------------
+
+        time_match = re.search(
+            r"\b(\d{1,2})\s+AGO\s*\|\s*(\d{1,2}:\d{2})\b",
+            line,
+            re.IGNORECASE
+        )
+
+        if not time_match:
+
+            continue
+
+        match_day = int(
+            time_match.group(1)
+        )
+
+        match_time = time_match.group(2)
+
+        # ----------------------------------------------------
+        # Search nearby lines.
+        # ----------------------------------------------------
+
+        before = []
+        after = []
+
+        for distance in range(
+            1,
+            5
+        ):
+
+            pos = index - distance
+
+            if pos >= 0:
+
+                before.append(
+                    lines[pos]
+                )
+
+        for distance in range(
+            1,
+            5
+        ):
+
+            pos = index + distance
+
+            if pos < len(lines):
+
+                after.append(
+                    lines[pos]
+                )
+
+        # ----------------------------------------------------
+        # Candidate team lines.
+        # ----------------------------------------------------
+
+        before_teams = []
+
+        for candidate in before:
+
+            if is_league_header(
+                candidate
+            ):
+
+                continue
+
+            found = extract_srl_teams(
+                candidate
+            )
+
+            for team in found:
+
+                if team.lower() not in {
+                    x.lower()
+                    for x in before_teams
+                }:
+
+                    before_teams.append(
+                        team
+                    )
+
+        after_teams = []
+
+        for candidate in after:
+
+            if is_league_header(
+                candidate
+            ):
+
+                continue
+
+            found = extract_srl_teams(
+                candidate
+            )
+
+            for team in found:
+
+                if team.lower() not in {
+                    x.lower()
+                    for x in after_teams
+                }:
+
+                    after_teams.append(
+                        team
+                    )
+
+        team1 = ""
+        team2 = ""
+
+        # ----------------------------------------------------
+        # Case 1:
+        #
+        # Team 1
+        # Team 2
+        # TIME
+        #
+        # This is common in rendered page text.
+        # ----------------------------------------------------
+
+        if len(before_teams) >= 2:
+
+            team1 = before_teams[1]
+            team2 = before_teams[0]
+
+            # In page order the nearest previous team is
+            # usually Team 2, and the next is Team 1.
+
+        # ----------------------------------------------------
+        # Case 2:
+        #
+        # Team 1
+        # TIME
+        # Team 2
+        # ----------------------------------------------------
+
+        elif (
+            len(before_teams) >= 1
+            and len(after_teams) >= 1
+        ):
+
+            team1 = before_teams[0]
+            team2 = after_teams[0]
+
+        # ----------------------------------------------------
+        # Case 3:
+        #
+        # TIME
+        # Team 1
+        # Team 2
+        # ----------------------------------------------------
+
+        elif len(after_teams) >= 2:
+
+            team1 = after_teams[0]
+            team2 = after_teams[1]
+
+        if not team1 or not team2:
+
+            continue
+
+        if team1.lower() == team2.lower():
+
+            continue
+
+        # ----------------------------------------------------
+        # Check surrounding row for completed/live text.
+        # ----------------------------------------------------
+
+        surrounding = " ".join(
+            before[:2]
+            + [line]
+            + after[:2]
+        ).lower()
+
+        if "terminado" in surrounding:
+
+            continue
+
+        if "won by" in surrounding:
+
+            continue
+
+        # ----------------------------------------------------
+        # Avoid accidentally using toss text as fixture.
+        # ----------------------------------------------------
+
+        if "won the toss" in surrounding:
+
+            continue
+
+        fixtures.append(
+            {
+                "league": current_league,
+                "team1": team1,
+                "team2": team2,
+                "time": match_time,
+                "day": match_day
+            }
+        )
+
+    return deduplicate_fixtures(
+        fixtures
+    )
+
+
+# ============================================================
+# DEDUPLICATE FIXTURES
+# ============================================================
+
+def deduplicate_fixtures(
+    fixtures
+):
+
+    unique = {}
+
+    for fixture in fixtures:
+
+        league = clean_text(
+            fixture.get(
+                "league",
+                "SRL"
+            )
+        )
+
+        team1 = clean_team_name(
+            fixture.get(
+                "team1",
+                ""
+            )
+        )
+
+        team2 = clean_team_name(
+            fixture.get(
+                "team2",
+                ""
+            )
+        )
+
+        match_time = clean_text(
+            fixture.get(
+                "time",
+                ""
+            )
+        )
+
+        match_day = fixture.get(
+            "day"
+        )
+
+        if not team1 or not team2:
+
+            continue
+
+        if team1.lower() == team2.lower():
+
+            continue
+
+        key = (
+            league.lower(),
+            team1.lower(),
+            team2.lower(),
+            str(match_day),
+            match_time
+        )
+
+        unique[key] = {
+            "league": league,
+            "team1": team1,
+            "team2": team2,
+            "time": match_time,
+            "day": match_day
+        }
+
+    return list(
+        unique.values()
+    )
+
+
+# ============================================================
+# BUILD STYLE 5 DAILY BOARD
+#
+# Example:
+#
+# 🏏 SRL FIXTURES — 30 AUG
+#
+# 🇵🇰 PSL SRL
+# 03:30  Karachi Kings SRL vs Islamabad United SRL
+# ...
+#
+# ============================================================
+
+def build_fixture_board(
+    fixtures,
+    now
+):
+
+    if not fixtures:
+
+        return None
+
+    # --------------------------------------------------------
+    # Group leagues while preserving page order.
+    # --------------------------------------------------------
+
+    groups = {}
+
+    league_order = []
+
+    for fixture in fixtures:
+
+        league = clean_text(
+            fixture.get(
+                "league",
+                "SRL"
+            )
+        )
+
+        if not league:
+
+            league = "SRL"
+
+        if league not in groups:
+
+            groups[league] = []
+            league_order.append(
+                league
+            )
+
+        groups[league].append(
+            fixture
+        )
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
+
+    lines = []
+
+    lines.append(
+        "🏏 SRL FIXTURES"
+    )
+
+    lines.append(
+        f"📅 {now.strftime('%d %b').upper()}"
+    )
+
+    # --------------------------------------------------------
+    # League emoji.
+    # --------------------------------------------------------
+
+    def league_prefix(
+        league
+    ):
+
+        value = league.lower()
+
+        if "pakistan" in value:
+
+            return "🇵🇰"
+
+        if "sa20" in value:
+
+            return "🇿🇦"
+
+        if "international" in value:
+
+            return "🌍"
+
+        if "super smash" in value:
+
+            return "🇳🇿"
+
+        if "indian premier" in value:
+
+            return "🇮🇳"
+
+        return "🏏"
+
+    # --------------------------------------------------------
+    # League short names for cleaner Telegram.
+    # --------------------------------------------------------
+
+    def league_display(
+        league
+    ):
+
+        value = league.strip()
+
+        lower = value.lower()
+
+        if "pakistan super league" in lower:
+
+            return "PSL SRL"
+
+        if "indian premier league" in lower:
+
+            return "IPL SRL"
+
+        if "t20 international" in lower:
+
+            return "T20I SRL"
+
+        if "super smash" in lower:
+
+            return "SUPER SMASH SRL"
+
+        if "sa20" in lower:
+
+            return "SA20 SRL"
+
+        return value
+
+    # --------------------------------------------------------
+    # Build each league.
+    # --------------------------------------------------------
+
+    for league in league_order:
+
+        lines.append("")
+
+        lines.append(
+            f"{league_prefix(league)} "
+            f"{league_display(league)}"
+        )
+
+        # ----------------------------------------------------
+        # Keep fixtures in Sportcentre order.
+        # ----------------------------------------------------
+
+        for fixture in groups[league]:
+
+            lines.append(
+                f"{fixture['time']}  "
+                f"{fixture['team1']} vs "
+                f"{fixture['team2']}"
+            )
+
+    return "\n".join(
+        lines
+    )
+
+
+# ============================================================
+# CHECK DAILY FIXTURE BOARD
+#
+# Runs from the normal 2-second monitor loop.
+#
+# At 00:01 IST:
+#
+# refresh
+#   ↓
+# read rendered DOM
+#   ↓
+# extract today's fixtures
+#   ↓
+# send one board
+#   ↓
+# save today's date
+#
+# ============================================================
+
+def check_daily_fixture_board(
+    driver
+):
+
+    global last_fixture_board_date
+
+    now = current_ist()
+
+    today_string = now.strftime(
+        "%Y-%m-%d"
+    )
+
+    # --------------------------------------------------------
+    # Before 00:01 = do nothing.
+    # --------------------------------------------------------
+
+    if now.hour < DAILY_FIXTURE_HOUR:
+
+        return
+
+    if (
+        now.hour == DAILY_FIXTURE_HOUR
+        and now.minute < DAILY_FIXTURE_MINUTE
+    ):
+
+        return
+
+    # --------------------------------------------------------
+    # Already sent today.
+    # --------------------------------------------------------
+
+    if (
+        last_fixture_board_date
+        == today_string
+    ):
+
+        return
+
+    log.info(
+        "📋 Preparing new daily SRL fixture board..."
+    )
+
+    # --------------------------------------------------------
+    # Refresh page.
+    # --------------------------------------------------------
+
+    try:
+
+        log.info(
+            "Refreshing page for daily fixture board..."
+        )
+
+        driver.refresh()
+
+        time.sleep(5)
+
+    except Exception as exc:
+
+        log.warning(
+            "Daily fixture refresh warning: %s",
+            exc
+        )
+
+    # --------------------------------------------------------
+    # Read rendered page.
+    # --------------------------------------------------------
+
+    page_text = get_page_text(
+        driver
+    )
+
+    if not page_text:
+
+        log.warning(
+            "Daily fixture board: empty page."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Extract all fixtures.
+    # --------------------------------------------------------
+
+    fixtures = extract_daily_fixtures_from_text(
+        page_text
+    )
+
+    if not fixtures:
+
+        log.warning(
+            "Daily fixture board: "
+            "no fixtures detected. Will retry."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # Only today's fixtures.
+    # --------------------------------------------------------
+
+    todays_fixtures = [
+        fixture
+        for fixture in fixtures
+        if fixture.get("day") == now.day
+    ]
+
+    if not todays_fixtures:
+
+        log.warning(
+            "Daily fixture board: "
+            "no fixtures matched today's date %s. "
+            "Will retry.",
+            now.day
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Build board.
+    # --------------------------------------------------------
+
+    message = build_fixture_board(
+        todays_fixtures,
+        now
+    )
+
+    if not message:
+
+        log.warning(
+            "Daily fixture board message empty."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # LOG.
+    # --------------------------------------------------------
+
+    log.info(
+        "📋 DAILY FIXTURE BOARD | "
+        "%s fixtures | %s",
+        len(todays_fixtures),
+        today_string
+    )
+
+    log.info(
+        "DAILY FIXTURE BOARD:\n%s",
+        message
+    )
+
+    # --------------------------------------------------------
+    # SEND EXACTLY ONCE.
+    # --------------------------------------------------------
+
+    success = send_telegram(
+        message
+    )
+
+    if not success:
+
+        log.error(
+            "❌ Daily fixture board Telegram failed. "
+            "Will retry."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Mark date only AFTER Telegram succeeds.
+    # --------------------------------------------------------
+
+    last_fixture_board_date = (
+        today_string
+    )
+
+    save_fixture_state()
+
+    log.info(
+        "✅ DAILY SRL FIXTURE BOARD SENT | "
+        "%s fixtures | %s",
+        len(todays_fixtures),
+        today_string
+    )
 
 
 # ============================================================
@@ -1505,7 +2244,7 @@ def monitor(
                     last_page_text = normalized
 
             # =================================================
-            # PRIMARY DOM DETECTOR
+            # PRIMARY DOM TOSS DETECTOR
             # =================================================
 
             dom_tosses = find_dom_tosses(
@@ -1519,7 +2258,7 @@ def monitor(
                 )
 
             # =================================================
-            # FALLBACK PAGE TEXT DETECTOR
+            # FALLBACK PAGE TEXT TOSS DETECTOR
             # =================================================
 
             text_tosses = find_text_tosses(
@@ -1533,13 +2272,22 @@ def monitor(
                 )
 
             # =================================================
-            # REFRESH
+            # DAILY FIXTURE BOARD
             # =================================================
 
-            now = time.monotonic()
+            check_daily_fixture_board(
+                driver
+            )
+
+            # =================================================
+            # NORMAL PAGE REFRESH
+            # =================================================
+
+            now_monotonic = time.monotonic()
 
             if (
-                now - last_refresh
+                now_monotonic
+                - last_refresh
                 >= PAGE_REFRESH_INTERVAL
             ):
 
@@ -1573,6 +2321,10 @@ def monitor(
             heartbeat(
                 "ACTIVE"
             )
+
+            # =================================================
+            # WAIT
+            # =================================================
 
             time.sleep(
                 CHECK_INTERVAL
@@ -1637,10 +2389,12 @@ def main():
     )
 
     # ========================================================
-    # STATE
+    # LOAD STATE
     # ========================================================
 
     load_state()
+
+    load_fixture_state()
 
     driver = None
 
@@ -1653,7 +2407,7 @@ def main():
         driver = create_driver()
 
         # ====================================================
-        # OPEN
+        # OPEN PAGE
         # ====================================================
 
         open_page(
@@ -1673,7 +2427,7 @@ def main():
         )
 
         # ====================================================
-        # STARTUP
+        # STARTUP TELEGRAM
         # ====================================================
 
         if send_telegram(
