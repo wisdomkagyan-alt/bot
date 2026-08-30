@@ -79,12 +79,12 @@ DAILY_FIXTURE_WINDOW_MINUTES = 10
 
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
-    ""
+    "8641333494:AAHFkQKnzHsebgk5AIio1_-hGuh38TN2wpU"
 ).strip()
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
-    ""
+    "8783763018"
 ).strip()
 
 
