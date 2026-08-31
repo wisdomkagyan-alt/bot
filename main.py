@@ -1,4 +1,3 @@
-============================================================
 # SRL TOSS SELENIUM MONITOR 2026
 #
 # SRL CRICKET ONLY
