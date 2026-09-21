@@ -49,7 +49,7 @@ REQUEST_TIMEOUT = 15
 # ============================================================
 # TELEGRAM
 #
-# USE RAILWAY VARIABLES ONLY
+# USE RAILWAY VARIABLES
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv(
@@ -656,11 +656,6 @@ def clean_team_name(
 
 # ============================================================
 # EXTRACT SRL TEAMS FROM DOM TEXT
-#
-# IMPORTANT:
-# This deliberately does NOT use re.IGNORECASE.
-# It prevents score fragments such as "0/0" from
-# becoming part of a team name.
 # ============================================================
 
 def extract_srl_teams(
@@ -705,128 +700,7 @@ def extract_srl_teams(
 
 
 # ============================================================
-# FIXTURE EXTRACTION
-#
-# Looks at the text immediately surrounding the toss.
-#
-# If the DOM row contains:
-#
-# Joburg Super Kings SRL
-# Durban Super Giants SRL
-# Joburg Super Kings SRL won the toss...
-#
-# the fixture becomes:
-#
-# Joburg Super Kings SRL
-# vs
-# Durban Super Giants SRL
-# ============================================================
-
-def extract_fixture(
-    value,
-    winner
-):
-
-    value = clean_text(
-        value
-    )
-
-    winner = clean_team_name(
-        winner
-    )
-
-    if not value:
-
-        return (
-            "",
-            ""
-        )
-
-    # --------------------------------------------------------
-    # Only examine text before "won the toss".
-    # --------------------------------------------------------
-
-    lower = value.lower()
-
-    position = lower.find(
-        "won the toss"
-    )
-
-    if position >= 0:
-
-        before_toss = value[
-            :position
-        ]
-
-    else:
-
-        before_toss = value
-
-    teams = extract_srl_teams(
-        before_toss
-    )
-
-    # --------------------------------------------------------
-    # If there are at least two teams,
-    # use the final two distinct teams.
-    # --------------------------------------------------------
-
-    if len(teams) >= 2:
-
-        team2 = teams[-1]
-
-        remaining = [
-            x for x in teams[:-1]
-            if x.lower() != team2.lower()
-        ]
-
-        if remaining:
-
-            team1 = remaining[-1]
-
-            return (
-                team1,
-                team2
-            )
-
-    # --------------------------------------------------------
-    # Sometimes the winner appears immediately before
-    # "won the toss", while the opponent is in the same
-    # DOM row but after/before another element.
-    # Search whole candidate text.
-    # --------------------------------------------------------
-
-    teams = extract_srl_teams(
-        value
-    )
-
-    unique = []
-
-    for team in teams:
-
-        if team.lower() not in {
-            x.lower() for x in unique
-        }:
-
-            unique.append(
-                team
-            )
-
-    if len(unique) >= 2:
-
-        return (
-            unique[-2],
-            unique[-1]
-        )
-
-    return (
-        "",
-        ""
-    )
-
-
-# ============================================================
-# PARSE TOSS SENTENCE
+# PARSE TOSS
 # ============================================================
 
 def parse_toss(
@@ -881,25 +755,16 @@ def parse_toss(
 
         return None
 
-    team1, team2 = extract_fixture(
-        sentence,
-        winner
-    )
-
     return {
         "winner": winner,
-        "decision": decision,
-        "team1": team1,
-        "team2": team2
+        "decision": decision
     }
 
 
 # ============================================================
 # FIND DOM TOSSES
 #
-# IMPROVED:
-# We inspect the toss element AND its ancestors.
-# This is the important fix for signals such as JSK.
+# Inspect toss element and ancestors.
 # ============================================================
 
 def find_dom_tosses(
@@ -938,7 +803,7 @@ def find_dom_tosses(
         candidates = []
 
         # ----------------------------------------------------
-        # Current element.
+        # Current element
         # ----------------------------------------------------
 
         try:
@@ -960,9 +825,7 @@ def find_dom_tosses(
             pass
 
         # ----------------------------------------------------
-        # Walk ancestors.
-        #
-        # We stop after 10 levels.
+        # Walk ancestors
         # ----------------------------------------------------
 
         current = element
@@ -984,7 +847,6 @@ def find_dom_tosses(
 
                 if parent_text:
 
-                    # Don't keep enormous page-level elements.
                     if len(parent_text) <= 1200:
 
                         candidates.append(
@@ -996,8 +858,7 @@ def find_dom_tosses(
                 break
 
         # ----------------------------------------------------
-        # Prefer the SMALLEST candidate that gives us
-        # a fixture.
+        # Smallest candidate first
         # ----------------------------------------------------
 
         candidates = sorted(
@@ -1017,17 +878,9 @@ def find_dom_tosses(
 
                 continue
 
-            if (
-                toss["team1"]
-                and toss["team2"]
-            ):
+            selected_toss = toss
 
-                selected_toss = toss
-                break
-
-            if selected_toss is None:
-
-                selected_toss = toss
+            break
 
         if selected_toss:
 
@@ -1042,8 +895,6 @@ def find_dom_tosses(
 
 # ============================================================
 # PAGE TEXT FALLBACK
-#
-# Kept as a backup if DOM structure changes.
 # ============================================================
 
 def find_text_tosses(
@@ -1091,9 +942,7 @@ def find_text_tosses(
         results.append(
             {
                 "winner": winner,
-                "decision": decision,
-                "team1": "",
-                "team2": ""
+                "decision": decision
             }
         )
 
@@ -1103,7 +952,7 @@ def find_text_tosses(
 
 
 # ============================================================
-# DEDUPLICATE SCAN RESULTS
+# DEDUPLICATE
 # ============================================================
 
 def deduplicate_tosses(
@@ -1128,49 +977,18 @@ def deduplicate_tosses(
             )
         ).lower()
 
-        team1 = clean_team_name(
-            toss.get(
-                "team1",
-                ""
-            )
-        )
-
-        team2 = clean_team_name(
-            toss.get(
-                "team2",
-                ""
-            )
-        )
-
         if not winner:
 
             continue
 
-        # ----------------------------------------------------
-        # Use fixture when available.
-        # ----------------------------------------------------
-
-        if team1 and team2:
-
-            key = (
-                winner.lower(),
-                team1.lower(),
-                team2.lower(),
-                decision
-            )
-
-        else:
-
-            key = (
-                winner.lower(),
-                decision
-            )
+        key = (
+            winner.lower(),
+            decision
+        )
 
         unique[key] = {
             "winner": winner,
-            "decision": decision,
-            "team1": team1,
-            "team2": team2
+            "decision": decision
         }
 
     return list(
@@ -1200,6 +1018,8 @@ def current_ist():
 
 # ============================================================
 # FORMAT DECISION
+#
+# THIS MATCHES THE OLD SCREENSHOT FORMAT
 # ============================================================
 
 def format_decision(
@@ -1227,7 +1047,7 @@ def format_decision(
 # ============================================================
 # TOSS MESSAGE
 #
-# KEEPING YOUR CURRENT SIMPLE FORMAT
+# OLD SCREENSHOT FORMAT
 # ============================================================
 
 def build_toss_message(
@@ -1244,7 +1064,8 @@ def build_toss_message(
     )
 
     return (
-        "🏏 SRL TOSS ALERT\n\n"
+        "🏏 SRL TOSS ALERT\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
 
         f"🏆 {toss['winner']} WON THE TOSS\n\n"
 
@@ -1260,18 +1081,6 @@ def build_toss_message(
 
 # ============================================================
 # TOSS ID
-#
-# IMPORTANT FIX:
-#
-# Fixture is included when available.
-#
-# Therefore:
-#
-# JSK + BAT + Match A
-#
-# is different from:
-#
-# JSK + BAT + Match B
 # ============================================================
 
 def make_toss_id(
@@ -1292,40 +1101,10 @@ def make_toss_id(
         )
     ).lower()
 
-    team1 = clean_text(
-        toss.get(
-            "team1",
-            ""
-        )
-    ).lower()
-
-    team2 = clean_text(
-        toss.get(
-            "team2",
-            ""
-        )
-    ).lower()
-
-    # --------------------------------------------------------
-    # BEST ID
-    # --------------------------------------------------------
-
-    if team1 and team2:
-
-        raw = (
-            f"{team1}|"
-            f"{team2}|"
-            f"{winner}|"
-            f"{decision}"
-        )
-
-    else:
-
-        # Fallback only when page text gives no fixture.
-        raw = (
-            f"{winner}|"
-            f"{decision}"
-        )
+    raw = (
+        f"{winner}|"
+        f"{decision}"
+    )
 
     return hashlib.sha256(
         raw.encode(
@@ -1361,23 +1140,6 @@ def process_toss(
 
     toss["winner"] = winner
 
-    team1 = clean_team_name(
-        toss.get(
-            "team1",
-            ""
-        )
-    )
-
-    team2 = clean_team_name(
-        toss.get(
-            "team2",
-            ""
-        )
-    )
-
-    toss["team1"] = team1
-    toss["team2"] = team2
-
     identifier = make_toss_id(
         toss
     )
@@ -1390,11 +1152,12 @@ def process_toss(
 
         log.debug(
             "Duplicate toss ignored | "
-            "%s | %s | %s vs %s",
+            "%s | %s",
             winner,
-            toss.get("decision", ""),
-            team1,
-            team2
+            toss.get(
+                "decision",
+                ""
+            )
         )
 
         return False
@@ -1405,19 +1168,16 @@ def process_toss(
 
     log.info(
         "🔥 NEW SRL TOSS DETECTED | "
-        "winner=%s | decision=%s | "
-        "fixture=%s vs %s",
+        "winner=%s | decision=%s",
         winner,
         toss.get(
             "decision",
             ""
-        ),
-        team1 or "SRL",
-        team2 or "Match"
+        )
     )
 
     # --------------------------------------------------------
-    # MESSAGE
+    # BUILD MESSAGE
     # --------------------------------------------------------
 
     message = build_toss_message(
