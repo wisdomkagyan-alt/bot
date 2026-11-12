@@ -1,5 +1,12 @@
 # ============================================================
-# SRL TOSS MONITOR - INSTANT EDITION
+# SRL TOSS MONITOR - WEBSOCKET EDITION
+#
+# - PRIMARY: Chrome DevTools Protocol listener reads the site's own
+#   WebSocket frames the moment they arrive (true push, no polling)
+# - BACKUP:  in-page MutationObserver (catches anything the socket
+#   path misses, e.g. during a socket reconnect)
+# - Both feed the same duplicate lock -> ONE alert per toss
+# - Needs: pip install selenium requests websocket-client
 #
 # - In-page MutationObserver (browser pushes changes instantly)
 # - Python drains the event queue every 20 ms
@@ -17,12 +24,14 @@
 #   CHROMEDRIVER_PATH
 # ============================================================
 
+import base64
 import json
 import logging
 import os
 import re
 import threading
 import time
+import zlib
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -34,12 +43,17 @@ from requests.adapters import HTTPAdapter
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
+try:
+    import websocket  # pip install websocket-client
+except ImportError:
+    websocket = None
+
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-SYSTEM_VERSION = "SRL-TOSS-INSTANT-2026"
+SYSTEM_VERSION = "SRL-TOSS-WEBSOCKET-2026"
 
 SRL_URL = "https://sportcenter.sir.sportradar.com/pt/simulated-reality/cricket"
 
@@ -233,7 +247,7 @@ def startup_message():
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "🏏 SRL CRICKET ONLY\n"
         "📡 Sportradar SRL Sportcentre\n\n"
-        "⚡ Mode: INSTANT (MutationObserver)\n"
+        "⚡ Mode: WEBSOCKET PUSH + DOM backup\n"
         f"🔄 Queue drain: {int(FAST_POLL * 1000)} ms\n\n"
         "📡 Telegram: ACTIVE\n"
         "🛡 Duplicate protection: ACTIVE\n"
@@ -264,6 +278,7 @@ def create_driver():
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-features=Translate",
+        "--remote-allow-origins=*",
         "--blink-settings=imagesEnabled=false",
         "--lang=en-US",
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -573,7 +588,8 @@ def process_toss(toss):
         seen_tosses[key] = {"ts": now, "decision": toss["decision"]}
 
     log.info(
-        "🔥 NEW SRL TOSS | winner=%s | decision=%s | %s vs %s",
+        "🔥 NEW SRL TOSS [%s] | winner=%s | decision=%s | %s vs %s",
+        toss.get("source", "?"),
         winner,
         toss["decision"] or "-",
         toss["team1"] or "SRL",
@@ -746,6 +762,294 @@ def release_process_lock():
 
 
 # ============================================================
+# WEBSOCKET (CDP) LISTENER
+#
+# Attaches to the same Chrome over the DevTools Protocol and
+# receives every WebSocket / SSE frame the page receives, the
+# instant it arrives. No polling.
+#
+# Set WS_DEBUG=1 in Railway to log every frame (first 200 chars)
+# so the exact toss frame format can be tuned.
+# ============================================================
+
+WS_WARMUP = 3.0             # seconds to ignore a brand-new socket's snapshot
+WS_SEEN_TTL_ID = 6 * 3600   # same match-id + toss never re-alerts for 6h
+WS_SEEN_TTL_NOID = 2700     # no id in frame -> 45 min
+WS_DEBUG = os.getenv("WS_DEBUG", "").strip() == "1"
+
+ID_KEYS = {
+    "id", "matchid", "match_id", "eventid", "event_id",
+    "fixtureid", "fixture_id", "uid",
+}
+
+ws_sockets = {}             # requestId -> first seen (monotonic)
+ws_seen = {}                # signature -> (timestamp, ttl)
+ws_seen_lock = threading.Lock()
+_unparsed_log = []
+
+local_http = requests.Session()
+local_http.trust_env = False
+
+
+def _decode_payload(opcode, data):
+    if opcode == 2:  # binary frame, base64 encoded by CDP
+        try:
+            raw = base64.b64decode(data)
+        except Exception:
+            return ""
+        for fn in (
+            lambda b: b,
+            lambda b: zlib.decompress(b, 47),    # gzip / zlib
+            lambda b: zlib.decompress(b, -15),   # raw deflate
+        ):
+            try:
+                return fn(raw).decode("utf-8")
+            except Exception:
+                continue
+        return ""
+    return data or ""
+
+
+def _parse_json(text):
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Socket.IO / SockJS style prefixes such as 42["event",{...}]
+    for i, ch in enumerate(text[:12]):
+        if ch in "[{":
+            try:
+                return json.loads(text[i:])
+            except Exception:
+                return None
+    return None
+
+
+def _collect_strings(obj, out, depth=0):
+    if depth > 6 or len(out) > 200:
+        return
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _collect_strings(v, out, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_strings(v, out, depth + 1)
+
+
+def _find_id(d):
+    for k, v in d.items():
+        if str(k).lower() in ID_KEYS and isinstance(v, (str, int)):
+            return str(v)
+    return ""
+
+
+def _walk(obj, found, ctx_id="", depth=0):
+    """Collect (toss_sentence, context_text, match_id) tuples."""
+    if depth > 8:
+        return
+
+    if isinstance(obj, dict):
+        my_id = _find_id(obj) or ctx_id
+        ctx = None
+        for v in obj.values():
+            if isinstance(v, str):
+                s = v.strip()
+                if s[:1] in "{[" and len(s) > 1:
+                    sub = _parse_json(s)
+                    if sub is not None:
+                        _walk(sub, found, my_id, depth + 1)
+                        continue
+                if "won the toss" in s.lower():
+                    if ctx is None:
+                        parts = []
+                        _collect_strings(obj, parts)
+                        ctx = " ".join(parts)
+                    found.append((s, ctx, my_id))
+            else:
+                _walk(v, found, my_id, depth + 1)
+
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk(v, found, ctx_id, depth + 1)
+
+    elif isinstance(obj, str):
+        s = obj.strip()
+        if s[:1] in "{[" and len(s) > 1:
+            sub = _parse_json(s)
+            if sub is not None:
+                _walk(sub, found, ctx_id, depth + 1)
+                return
+        if "won the toss" in s.lower():
+            found.append((s, s, ctx_id))
+
+
+def _log_unparsed(text):
+    now = time.monotonic()
+    _unparsed_log[:] = [t for t in _unparsed_log if now - t < 60]
+    if len(_unparsed_log) >= 5:
+        return
+    _unparsed_log.append(now)
+    log.warning("UNPARSED TOSS FRAME: %s", text[:800])
+
+
+def handle_ws_text(sock_id, text):
+    if WS_DEBUG:
+        log.info("WS FRAME [%s]: %s", sock_id[-6:], text[:200])
+
+    if "toss" not in text.lower():
+        return
+
+    first_seen = ws_sockets.setdefault(sock_id, time.monotonic())
+    warm = (time.monotonic() - first_seen) < WS_WARMUP
+
+    found = []
+    data = _parse_json(text)
+    if data is not None:
+        _walk(data, found)
+    else:
+        for m in TOSS_RE.finditer(clean_text(text)):
+            found.append((m.group(0), text, ""))
+
+    if not found:
+        _log_unparsed(text)
+        return
+
+    now = time.time()
+
+    for sentence, ctx, ident in found:
+        toss = pick_toss([sentence, ctx])
+        if not toss:
+            continue
+
+        sig = f"{ident}|{toss['winner'].lower()}|{toss['decision']}"
+        ttl = WS_SEEN_TTL_ID if ident else WS_SEEN_TTL_NOID
+
+        with ws_seen_lock:
+            if len(ws_seen) > 5000:
+                for k in [k for k, (t, l) in ws_seen.items() if now - t > l]:
+                    ws_seen.pop(k, None)
+            prev = ws_seen.get(sig)
+            if prev and now - prev[0] < prev[1]:
+                continue
+            ws_seen[sig] = (now, ttl)
+
+        if warm:
+            # Snapshot of the socket: remember it, do not alert.
+            continue
+
+        toss["source"] = "WS"
+        sender_pool.submit(process_toss, toss)
+
+
+class CDPListener:
+    def __init__(self, debugger_address):
+        self.addr = debugger_address.replace("localhost", "127.0.0.1")
+        self.stop_evt = threading.Event()
+        self.thread = None
+        self.ws = None
+
+    def start(self):
+        if websocket is None:
+            log.error(
+                "websocket-client not installed. WebSocket mode OFF "
+                "(DOM backup still active). pip install websocket-client"
+            )
+            return
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_evt.set()
+        try:
+            if self.ws:
+                self.ws.close()
+        except Exception:
+            pass
+
+    def _target_url(self):
+        r = local_http.get(f"http://{self.addr}/json", timeout=3)
+        pages = [t for t in r.json() if t.get("type") == "page"]
+        for t in pages:
+            if "sportradar" in t.get("url", ""):
+                return t.get("webSocketDebuggerUrl")
+        return pages[0].get("webSocketDebuggerUrl") if pages else None
+
+    def _run(self):
+        while not self.stop_evt.is_set():
+            try:
+                url = self._target_url()
+                if not url:
+                    time.sleep(0.5)
+                    continue
+
+                self.ws = websocket.create_connection(
+                    url,
+                    timeout=20,
+                    suppress_origin=True,
+                    enable_multithread=True,
+                )
+                self.ws.send(
+                    json.dumps({"id": 1, "method": "Network.enable", "params": {}})
+                )
+                log.info("⚡ CDP WebSocket listener connected")
+
+                while not self.stop_evt.is_set():
+                    try:
+                        raw = self.ws.recv()
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    if not raw:
+                        break
+                    self._on_message(raw)
+
+            except Exception as exc:
+                if not self.stop_evt.is_set():
+                    log.warning("CDP listener error: %s", exc)
+            finally:
+                try:
+                    if self.ws:
+                        self.ws.close()
+                except Exception:
+                    pass
+            if not self.stop_evt.is_set():
+                time.sleep(0.5)
+
+    def _on_message(self, raw):
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            return
+
+        method = msg.get("method")
+        params = msg.get("params") or {}
+
+        if method == "Network.webSocketCreated":
+            ws_sockets[params.get("requestId", "")] = time.monotonic()
+            log.info("🔌 Page WebSocket opened: %s", params.get("url", "")[:200])
+
+        elif method == "Network.webSocketFrameReceived":
+            resp = params.get("response") or {}
+            text = _decode_payload(
+                resp.get("opcode", 1), resp.get("payloadData", "")
+            )
+            if text:
+                handle_ws_text(params.get("requestId", ""), text)
+
+        elif method == "Network.eventSourceMessageReceived":
+            handle_ws_text(
+                "sse:" + params.get("requestId", ""), params.get("data", "")
+            )
+
+        elif method == "Network.webSocketClosed":
+            ws_sockets.pop(params.get("requestId", ""), None)
+
+
+# ============================================================
 # MONITOR LOOP
 #
 # Returns "restart" if Chrome seems dead (caller rebuilds it).
@@ -765,6 +1069,7 @@ def monitor(driver):
             for candidates in events:
                 toss = pick_toss(candidates)
                 if toss:
+                    toss["source"] = "DOM"
                     sender_pool.submit(process_toss, toss)
 
             now = time.monotonic()
@@ -831,8 +1136,23 @@ def main():
     driver = None
     try:
         while True:
+            listener = None
             try:
                 driver = create_driver()
+
+                # Attach to the page BEFORE loading it so the
+                # socket-created events are seen from the start.
+                addr = (
+                    driver.capabilities
+                    .get("goog:chromeOptions", {})
+                    .get("debuggerAddress", "")
+                )
+                if addr:
+                    listener = CDPListener(addr)
+                    listener.start()
+                else:
+                    log.warning("No debugger address. DOM backup only.")
+
                 open_page(driver)
                 drain_events(driver)  # install observer + baseline now
                 result = monitor(driver)
@@ -843,6 +1163,8 @@ def main():
                 log.exception("Driver error: %s", exc)
                 heartbeat("DRIVER ERROR")
             finally:
+                if listener:
+                    listener.stop()
                 if driver:
                     try:
                         driver.quit()
